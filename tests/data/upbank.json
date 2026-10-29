@@ -1,0 +1,207 @@
+[
+   {
+      "type": "transactions",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "attributes": {
+         "status": "HELD",
+         "rawText": "CAFE EXAMPLE SYDNEY",
+         "description": "Cafe Example",
+         "message": null,
+         "isCategorizable": true,
+         "holdInfo": {
+            "amount": {
+               "currencyCode": "AUD",
+               "value": "-6.50",
+               "valueInBaseUnits": -650
+            },
+            "foreignAmount": null
+         },
+         "roundUp": null,
+         "cashback": null,
+         "amount": {
+            "currencyCode": "AUD",
+            "value": "-6.50",
+            "valueInBaseUnits": -650
+         },
+         "foreignAmount": null,
+         "cardPurchaseMethod": {
+            "method": "CARD_ON_FILE",
+            "cardNumberSuffix": "0000"
+         },
+         "settledAt": null,
+         "createdAt": "2025-04-25T08:15:00+10:00",
+         "transactionType": "Purchase",
+         "note": null,
+         "performingCustomer": {
+            "displayName": "Alice"
+         },
+         "deepLinkURL": "up://transaction/AAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "relationships": {
+         "account": {
+            "data": {
+               "type": "accounts",
+               "id": "00000000-0000-4000-8000-0000000000a1"
+            },
+            "links": {
+               "related": "https://api.up.com.au/api/v1/accounts/00000000-0000-4000-8000-0000000000a1"
+            }
+         },
+         "transferAccount": {
+            "data": null
+         },
+         "category": {
+            "data": null,
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000003/relationships/category"
+            }
+         },
+         "parentCategory": {
+            "data": null
+         },
+         "tags": {
+            "data": [],
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000003/relationships/tags"
+            }
+         },
+         "attachment": {
+            "data": null
+         }
+      },
+      "links": {
+         "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000003"
+      }
+   },
+   {
+      "type": "transactions",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "attributes": {
+         "status": "SETTLED",
+         "rawText": "EXAMPLE BOOKS PTY LTD",
+         "description": "Example Books",
+         "message": "Birthday present",
+         "isCategorizable": true,
+         "holdInfo": null,
+         "roundUp": null,
+         "cashback": null,
+         "amount": {
+            "currencyCode": "AUD",
+            "value": "-42.10",
+            "valueInBaseUnits": -4210
+         },
+         "foreignAmount": null,
+         "cardPurchaseMethod": {
+            "method": "CONTACTLESS",
+            "cardNumberSuffix": "0000"
+         },
+         "settledAt": "2025-04-24T09:30:00+10:00",
+         "createdAt": "2025-04-24T09:29:00+10:00",
+         "transactionType": "Purchase",
+         "note": null,
+         "performingCustomer": {
+            "displayName": "Alice"
+         },
+         "deepLinkURL": "up://transaction/AAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "relationships": {
+         "account": {
+            "data": {
+               "type": "accounts",
+               "id": "00000000-0000-4000-8000-0000000000a1"
+            },
+            "links": {
+               "related": "https://api.up.com.au/api/v1/accounts/00000000-0000-4000-8000-0000000000a1"
+            }
+         },
+         "transferAccount": {
+            "data": null
+         },
+         "category": {
+            "data": null,
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000002/relationships/category"
+            }
+         },
+         "parentCategory": {
+            "data": null
+         },
+         "tags": {
+            "data": [],
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000002/relationships/tags"
+            }
+         },
+         "attachment": {
+            "data": null
+         }
+      },
+      "links": {
+         "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000002"
+      }
+   },
+   {
+      "type": "transactions",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "attributes": {
+         "status": "SETTLED",
+         "rawText": "ALICE EXAMPLE",
+         "description": "ALICE EXAMPLE",
+         "message": "Up Alice",
+         "isCategorizable": true,
+         "holdInfo": null,
+         "roundUp": null,
+         "cashback": null,
+         "amount": {
+            "currencyCode": "AUD",
+            "value": "350.00",
+            "valueInBaseUnits": 35000
+         },
+         "foreignAmount": null,
+         "cardPurchaseMethod": null,
+         "settledAt": "2025-04-23T22:07:17+10:00",
+         "createdAt": "2025-04-23T22:07:17+10:00",
+         "transactionType": "Direct Credit",
+         "note": null,
+         "performingCustomer": {
+            "displayName": "Alice"
+         },
+         "deepLinkURL": "up://transaction/AAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "relationships": {
+         "account": {
+            "data": {
+               "type": "accounts",
+               "id": "00000000-0000-4000-8000-0000000000a1"
+            },
+            "links": {
+               "related": "https://api.up.com.au/api/v1/accounts/00000000-0000-4000-8000-0000000000a1"
+            }
+         },
+         "transferAccount": {
+            "data": null
+         },
+         "category": {
+            "data": null,
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000001/relationships/category"
+            }
+         },
+         "parentCategory": {
+            "data": null
+         },
+         "tags": {
+            "data": [],
+            "links": {
+               "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000001/relationships/tags"
+            }
+         },
+         "attachment": {
+            "data": null
+         }
+      },
+      "links": {
+         "self": "https://api.up.com.au/api/v1/transactions/00000000-0000-4000-8000-000000000001"
+      }
+   }
+]

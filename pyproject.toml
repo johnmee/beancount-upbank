@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "beancount-upbank"
+version = "0.1.0"
+description = "Import Up Bank (Australia) transactions into Beancount, and tidy up pending ones once they settle."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "John Mee" }]
+keywords = ["beancount", "beangulp", "up", "up bank", "australia", "importer", "accounting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+dependencies = [
+    "beancount>=3.2.3",
+    "beangulp>=0.2.0",
+    "click>=8.1.8",
+    "requests>=2.32",
+]
+
+[project.urls]
+Homepage = "https://github.com/johnmee/beancount-upbank"
+Issues = "https://github.com/johnmee/beancount-upbank/issues"
+
+[project.scripts]
+upbank = "beancount_upbank.cli:cli"
+upbank-reconcile = "beancount_upbank.reconcile_cli:cli"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.17.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beancount_upbank"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+# On top of Ruff's defaults: import sorting, and bugbear's likely-bug checks.
+extend-select = ["I", "B"]
