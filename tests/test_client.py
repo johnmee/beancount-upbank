@@ -97,26 +97,23 @@ def test_get_recent_looks_back_the_given_number_of_days_from_now(monkeypatch):
     )
 
 
-def test_assertion_backs_out_todays_transactions():
-    today = datetime.datetime.now(upbank_client.UP_TZ).date()
-    pulled = [_txn(f"{today}T13:00:00+10:00", "-40.00")]
+def test_assertion_backs_out_todays_transactions(pinned_today):
+    pulled = [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     fake = FakeClient(["160.00", "160.00"], [pulled, pulled])
-    assert start_of_day_assertion(fake) == (today, Decimal("200.00"))
+    assert start_of_day_assertion(fake) == (pinned_today, Decimal("200.00"))
 
 
-def test_assertion_retries_when_a_transaction_lands_mid_read():
-    today = datetime.datetime.now(upbank_client.UP_TZ).date()
-    first = [_txn(f"{today}T10:00:00+10:00", "-15.00")]
-    second = first + [_txn(f"{today}T13:00:00+10:00", "-40.00")]
+def test_assertion_retries_when_a_transaction_lands_mid_read(pinned_today):
+    first = [_txn(f"{pinned_today}T10:00:00+10:00", "-15.00")]
+    second = first + [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     # The balance read happens between the two pulls, so it may or may not
     # include the transaction that arrived; the pulls disagree, so retry.
     fake = FakeClient(["145.00"] * 3, [first, second, second, second])
-    assert start_of_day_assertion(fake) == (today, Decimal("200.00"))
+    assert start_of_day_assertion(fake) == (pinned_today, Decimal("200.00"))
 
 
-def test_assertion_gives_up_when_transactions_never_settle():
-    today = datetime.datetime.now(upbank_client.UP_TZ).date()
-    pulls = [[_txn(f"{today}T10:00:00+10:00", str(-n))] for n in range(1, 7)]
+def test_assertion_gives_up_when_transactions_never_settle(pinned_today):
+    pulls = [[_txn(f"{pinned_today}T10:00:00+10:00", str(-n))] for n in range(1, 7)]
     fake = FakeClient(["100.00"] * 4, pulls)
     with pytest.raises(UpbankError):
         start_of_day_assertion(fake)
@@ -314,3 +311,10 @@ def test_connection_failures_are_retried_then_reported(monkeypatch, sleeps):
 def test_select_account_reports_a_token_with_no_accounts(selector):
     with pytest.raises(UpbankError, match="can see no Up accounts"):
         select_account([], selector)
+
+
+def test_sydney_today_is_the_date_in_sydney():
+    before = datetime.datetime.now(upbank_client.UP_TZ).date()
+    today = upbank_client.sydney_today()
+    after = datetime.datetime.now(upbank_client.UP_TZ).date()
+    assert today in (before, after)

@@ -29,9 +29,18 @@ MAX_RETRY_DELAY = 60
 HELD = "HELD"
 SETTLED = "SETTLED"
 
-# Up stamps `createdAt` in Sydney time, and the importer dates ledger entries
-# from it, so a ledger day is a Sydney day whatever this machine's clock says.
+# Up stamps `createdAt` with Sydney's offset, and the importer dates ledger
+# entries from it, so a ledger day is a Sydney day whatever this machine's
+# clock says. Up's API docs don't say which timezone they use; this is
+# observed, not documented: stamps carry +10:00 in winter and +11:00 under
+# daylight saving (seen November 2026, for a Sydney customer). Whether a
+# customer elsewhere (e.g. Perth) gets their own local time is unconfirmed.
 UP_TZ = ZoneInfo("Australia/Sydney")
+
+
+def sydney_today() -> datetime.date:
+    """Today's date in Sydney, the ledger's day."""
+    return datetime.datetime.now(UP_TZ).date()
 
 
 class UpbankError(Exception):
@@ -316,7 +325,7 @@ def start_of_day_assertion(
         UpbankError: the transactions kept changing while the balance was read.
     """
     if today is None:
-        today = datetime.datetime.now(UP_TZ).date()
+        today = sydney_today()
     since = datetime.datetime.combine(today, datetime.time(), tzinfo=UP_TZ)
     # The balance and the transactions are separate requests. Pulling the
     # transactions on both sides of the balance read, and retrying until the

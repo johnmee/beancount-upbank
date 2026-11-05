@@ -3,14 +3,13 @@
 The balance arithmetic itself is tested in test_client.py.
 """
 
-import datetime
 from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
 from beancount_upbank import cli as upbank_cli
-from beancount_upbank.client import UP_TZ, UpbankError
+from beancount_upbank.client import UpbankError
 
 
 def _txn(created, value, status="SETTLED", up_id=None):
@@ -103,9 +102,8 @@ def test_balance_prints_only_the_live_amount_and_currency(monkeypatch):
     assert result.stdout == "145.00 AUD\n"
 
 
-def test_balance_midnight_backs_out_todays_transactions(monkeypatch):
-    today = datetime.datetime.now(UP_TZ).date()
-    pulled = [_txn(f"{today}T13:00:00+10:00", "-40.00")]
+def test_balance_midnight_backs_out_todays_transactions(monkeypatch, pinned_today):
+    pulled = [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     fake = FakeClient(["160.00", "160.00"], [pulled, pulled])
     result = _invoke(monkeypatch, fake, "balance", "--midnight")
     assert result.exit_code == 0, result.output
@@ -136,9 +134,10 @@ def test_token_warning_keeps_balance_stdout_clean(monkeypatch):
     assert "Warning" in result.stderr
 
 
-def test_balance_midnight_reports_unsettled_transactions_cleanly(monkeypatch):
-    today = datetime.datetime.now(UP_TZ).date()
-    a, b = [_txn(f"{today}T09:00:00+10:00", "-1.00")], []
+def test_balance_midnight_reports_unsettled_transactions_cleanly(
+    monkeypatch, pinned_today
+):
+    a, b = [_txn(f"{pinned_today}T09:00:00+10:00", "-1.00")], []
     fake = FakeClient(["1.00"] * 4, [a, b, a, b, a, b])
     result = _invoke(monkeypatch, fake, "balance", "--midnight")
     assert result.exit_code == 1
