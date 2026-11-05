@@ -6,12 +6,11 @@ The balance arithmetic itself is tested in test_client.py.
 import datetime
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from beancount_upbank import cli as upbank_cli
 from beancount_upbank.client import UP_TZ, UpbankError
-
-ACCOUNT = "Assets:Bank:Alice-Upbank"
 
 
 def _txn(created, value, status="SETTLED", up_id=None):
@@ -97,34 +96,54 @@ class PingClient:
         return SimpleNamespace(text="pong")
 
 
-def test_balance_shows_the_live_figure_unadjusted(monkeypatch):
-    # For a human: what the Up app shows, today's spending included.
+def test_balance_prints_only_the_live_amount_and_currency(monkeypatch):
     fake = FakeClient(["145.00"], [])
-    result = _invoke(monkeypatch, fake, "balance", "Alice")
+    result = _invoke(monkeypatch, fake, "balance")
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "Alice: 145.00 AUD"
+    assert result.stdout == "145.00 AUD\n"
 
 
-def test_assertion_prints_start_of_today_balance(monkeypatch):
+def test_balance_midnight_backs_out_todays_transactions(monkeypatch):
     today = datetime.datetime.now(UP_TZ).date()
     pulled = [_txn(f"{today}T13:00:00+10:00", "-40.00")]
     fake = FakeClient(["160.00", "160.00"], [pulled, pulled])
-    result = _invoke(monkeypatch, fake, "assertion", ACCOUNT)
+    result = _invoke(monkeypatch, fake, "balance", "--midnight")
     assert result.exit_code == 0, result.output
-    assert result.output.split() == [str(today), "balance", ACCOUNT, "200.00", "AUD"]
+    assert result.stdout == "200.00 AUD\n"
 
 
-def test_assertion_rejects_a_bare_name_rather_than_writing_a_bad_directive(
-    monkeypatch,
-):
-    # The argument used to be a short name ("Alice") that was spliced into
-    # Assets:Bank:{name}-Upbank. A stale caller must fail, not append
-    # `balance Alice ...` to a ledger.
+def test_balance_midnight_equals_live_when_nothing_happened_today(monkeypatch):
     fake = FakeClient(["160.00", "160.00"], [[], []])
-    result = _invoke(monkeypatch, fake, "assertion", "Alice")
+    result = _invoke(monkeypatch, fake, "balance", "--midnight")
+    assert result.stdout == "160.00 AUD\n"
+
+
+@pytest.mark.parametrize(
+    "args", [["balance", "Alice"], ["assertion", "Assets:Bank:Up"]]
+)
+def test_stale_invocations_fail_and_write_nothing_to_stdout(monkeypatch, args):
+    # Callers used to run `upbank assertion ACCOUNT >> ledger`.
+    result = _invoke(monkeypatch, FakeClient([], []), *args)
     assert result.exit_code == 2
-    assert "full beancount account name" in result.output
-    assert "balance Alice" not in result.output
+    assert result.stdout == ""
+
+
+def test_token_warning_keeps_balance_stdout_clean(monkeypatch):
+    fake = FakeClient(["145.00"], [])
+    result = _invoke(monkeypatch, fake, "balance", env={"UPBANK_TOKEN": "nope"})
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "145.00 AUD\n"
+    assert "Warning" in result.stderr
+
+
+def test_balance_midnight_reports_unsettled_transactions_cleanly(monkeypatch):
+    today = datetime.datetime.now(UP_TZ).date()
+    a, b = [_txn(f"{today}T09:00:00+10:00", "-1.00")], []
+    fake = FakeClient(["1.00"] * 4, [a, b, a, b, a, b])
+    result = _invoke(monkeypatch, fake, "balance", "--midnight")
+    assert result.exit_code == 1
+    assert "Error: Up transactions kept changing" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_client_errors_become_clean_command_line_errors(monkeypatch):
@@ -132,7 +151,7 @@ def test_client_errors_become_clean_command_line_errors(monkeypatch):
         def accounts(self):
             raise UpbankError("Up API request to /accounts failed (HTTP 401)")
 
-    result = _invoke(monkeypatch, Failing(), "balance", "Alice")
+    result = _invoke(monkeypatch, Failing(), "balance")
     assert result.exit_code == 1
     assert "Error: Up API request to /accounts failed (HTTP 401)" in result.output
     assert "Traceback" not in result.output
@@ -312,3 +331,14 @@ def test_month_and_held_cover_every_account_unless_one_is_selected(monkeypatch):
         ("month", 2026, 3, "spend-1"),
         ("recent", 10, "spend-1", "HELD"),
     ]
+
+
+def test_a_token_with_no_accounts_is_a_clean_error(monkeypatch):
+    class NoAccounts:
+        def accounts(self):
+            return []
+
+    result = _invoke(monkeypatch, NoAccounts(), "balance")
+    assert result.exit_code == 1
+    assert "Error: The token can see no Up accounts" in result.output
+    assert "Traceback" not in result.output

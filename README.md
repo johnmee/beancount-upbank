@@ -6,7 +6,8 @@ Import [Up](https://up.com.au/) (Australia) transactions into
 - `upbank` connects to the Up API and downloads your transactions as json.
 - `UpbankImporter` is a [beangulp](https://github.com/beancount/beangulp)
   importer that converts the json download into plain text Beancount entries.
-- `upbank assertion` prints a `balance` directive which considers **pending** transactions.
+- `upbank balance --midnight` prints the balance a start-of-day `balance`
+  directive needs, with **pending** transactions included.
 - `upbank-reconcile` clears transactions that were **pending** when you
   imported them, once Up settles or releases them.
 
@@ -107,8 +108,7 @@ Options:
 
 Commands:
   accounts    List the token's Up accounts: id, type, name and balance.
-  assertion   Print a ledger balance assertion for the start of today.
-  balance     Show the account's balance right now, as the Up app does.
+  balance     Show the balance, now or at last midnight.
   categories  Get a list of transaction categories.
   held        Download held transactions.
   month       Download a sequence of transactions.
@@ -126,16 +126,24 @@ Beancount checks a `balance` directive at the **start** of its date, but Up
 reports the balance **now**, which already includes everything spent today.
 Stamping Up's figure with today's date fails whenever something was spent
 earlier today; stamping it with tomorrow's fails when something is spent later.
-`upbank assertion` backs today's transactions out, giving the balance your
-ledger must show at midnight:
+`upbank balance --midnight` backs today's transactions out, giving the balance
+your ledger must show at midnight (Sydney time):
 
 ```
-$ upbank assertion Assets:Bank:Up >> up-2026.beancount
-2026-09-07 balance Assets:Bank:Up       200.00 AUD
+$ upbank balance --midnight
+200.00 AUD
 ```
 
-It takes the **full beancount account name**, and refuses anything that is not
-one, so a mistyped argument cannot put a bad directive in your ledger.
+It prints only the amount, so compose the directive yourself, with the date
+pinned to Sydney:
+
+```
+$ amount=$(upbank balance --midnight) &&
+  echo "$(TZ=Australia/Sydney date +%F) balance Assets:Bank:Up $amount" >> up-2026.beancount
+```
+
+The `&&` matters: if `upbank` fails, nothing is appended, rather than a
+`balance` line with no amount.
 
 ### More than one account
 
@@ -210,9 +218,9 @@ $ upbank-reconcile up-2026.beancount /tmp/up.json --account Assets:Bank:Up --fix
 Applied. Verified against the untouched 2026-09-06 assertion (968.75 AUD).
 ```
 
-Run it **last**, after `upbank assertion` has appended this run's assertion.
-That assertion is the only one known to postdate a release, so it is the
-evidence the run checks itself against. If any assertion fails afterwards, a
+Run it **last**, after you have appended this run's `balance --midnight`
+assertion. That assertion is the only one known to postdate a release, so it is
+the evidence the run checks itself against. If any assertion fails afterwards, a
 `--fix` run puts the ledger back exactly as it found it and exits non-zero; no
 backup file is written. Without `--fix` it only reports.
 

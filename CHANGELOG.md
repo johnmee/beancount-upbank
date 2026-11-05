@@ -7,6 +7,11 @@
 - `upbank` warns when a token does not start with `up:`.
 - `upbank <command> --help` works without a usable token.
 - Requires click 8.2 or newer.
+- A token that can see no Up accounts is reported as an error, not a traceback.
+- **Breaking:** `upbank assertion` is gone; use `upbank balance --midnight`.
+  `upbank balance` takes no LABEL and prints only the amount, e.g.
+  `145.00 AUD`, so it no longer writes a `balance` directive: build one
+  yourself (see the README).
 
 ## 0.1.0
 

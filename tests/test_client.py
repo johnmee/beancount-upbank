@@ -14,6 +14,7 @@ import requests
 from beancount_upbank import client as upbank_client
 from beancount_upbank.client import (
     UpbankError,
+    select_account,
     start_of_day_assertion,
     start_of_day_balance,
 )
@@ -307,3 +308,9 @@ def test_connection_failures_are_retried_then_reported(monkeypatch, sleeps):
 
     _script_requests(monkeypatch, requests.Timeout("slow"), _ok("a"))
     assert upbank_client.UpbankClient("t").get("/accounts") == [{"id": "a"}]
+
+
+@pytest.mark.parametrize("selector", [None, "Spending"])
+def test_select_account_reports_a_token_with_no_accounts(selector):
+    with pytest.raises(UpbankError, match="can see no Up accounts"):
+        select_account([], selector)

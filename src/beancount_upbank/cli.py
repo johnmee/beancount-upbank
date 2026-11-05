@@ -148,41 +148,30 @@ def accounts(session):
 
 
 @cli.command()
-@click.argument("label", type=click.types.STRING)
+@click.option(
+    "--midnight",
+    is_flag=True,
+    help="Balance as at midnight last night (Sydney time), excluding today's "
+    "transactions.",
+)
 @click.pass_obj
-def balance(session, label):
-    """Show the account's balance right now, as the Up app does.
-
-    LABEL is only used to caption the output.
-    """
-    _, current = live_balance(session.client, session.account)
-    click.echo(f"{label}: {current} AUD")
-
-
-@cli.command()
-@click.argument("account", type=click.types.STRING)
-@click.pass_obj
-def assertion(session, account):
-    """Print a ledger balance assertion for the start of today.
-
-    ACCOUNT is the full beancount account name the assertion is for, such as
-    Assets:Bank:Up.
+def balance(session, midnight):
+    """Show the balance, now or at last midnight.
 
     Beancount checks a `balance` directive at the start of its date, while
     Up's balance runs through the day. Stamping Up's current balance with
     today's date fails whenever something was spent earlier today; stamping
-    it with tomorrow's fails when something is spent later today. So today's
-    transactions are backed out instead, giving the balance the ledger must
-    show at midnight.
+    it with tomorrow's fails when something is spent later today. So
+    --midnight backs today's transactions out instead, giving the balance the
+    ledger must show at midnight.
+
+    That midnight is the start of today in Sydney, whatever your timezone.
     """
-    if ":" not in account:
-        raise click.BadParameter(
-            f"{account!r} is not a full beancount account name "
-            f"(expected something like Assets:Bank:Up)",
-            param_hint="ACCOUNT",
-        )
-    today, opening = start_of_day_assertion(session.client, account=session.account)
-    click.echo(f"{today} balance {account} \t\t {opening} AUD\n")
+    if midnight:
+        _, amount = start_of_day_assertion(session.client, account=session.account)
+    else:
+        _, amount = live_balance(session.client, session.account)
+    click.echo(f"{amount} AUD")
 
 
 def _account_id(session):

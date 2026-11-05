@@ -271,8 +271,11 @@ def select_account(accounts: list, selector: str | None = None) -> dict:
             for the first account Up lists.
 
     Raises:
-        UpbankError: nothing matches the selector.
+        UpbankError: the token can see no accounts, or nothing matches the
+            selector.
     """
+    if not accounts:
+        raise UpbankError("The token can see no Up accounts.")
     if selector is None:
         return accounts[0]
     for acct in accounts:

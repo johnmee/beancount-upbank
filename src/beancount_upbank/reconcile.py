@@ -54,12 +54,14 @@ USAGE
 ``--fix``
     Apply the edits. The default (``--dry-run``) only reports them.
 
-Run it **last**, after ``upbank assertion`` has appended this run's assertion::
+Run it **last**, after this run's ``upbank balance --midnight`` assertion is
+appended::
 
     upbank recent 30 > /tmp/up.json
     python import.py extract -e main.beancount /tmp/up.json > /tmp/up.beancount
     fuzzyfill --training main.beancount /tmp/up.beancount >> up-2026.beancount
-    upbank assertion Assets:Bank:Up >> up-2026.beancount
+    amount=$(upbank balance --midnight) &&
+      echo "$(TZ=Australia/Sydney date +%F) balance Assets:Bank:Up $amount" >> up-2026.beancount
     upbank-reconcile up-2026.beancount /tmp/up.json \\
         --root main.beancount --account Assets:Bank:Up --fix
 
@@ -244,7 +246,7 @@ def newest_assertion(entries, account):
     ]
     if not assertions:
         return None
-    # `upbank assertion` dates its directive today, so running the target twice in
+    # The start-of-day assertion is dated today, so running the target twice in
     # one day leaves two on the same date. The later one in the file is the
     # newer snapshot; tie-break on position so the other is treated as an
     # ordinary intermediate assertion.
