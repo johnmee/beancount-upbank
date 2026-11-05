@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `--token env:NAME` (or `UPBANK_TOKEN=env:NAME`) reads the token from
+  environment variable `NAME`, so several tokens can live in the environment.
+- `upbank` warns when a token does not start with `up:`.
+- `upbank <command> --help` works without a usable token.
+- Requires click 8.2 or newer.
+
 ## 0.1.0
 
 First release, extracted from `aussie-bean-tools`.

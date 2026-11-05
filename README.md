@@ -3,16 +3,16 @@
 Import [Up](https://up.com.au/) (Australia) transactions into
 [Beancount](https://beancount.github.io/).
 
-- `upbank` downloads your transactions from the Up API.
+- `upbank` connects to the Up API and downloads your transactions as json.
 - `UpbankImporter` is a [beangulp](https://github.com/beancount/beangulp)
-  importer that turns that download into Beancount entries.
-- `upbank assertion` prints a `balance` directive you can trust.
-- `upbank-reconcile` tidies up transactions that were still **pending** when you
+  importer that converts the json download into plain text Beancount entries.
+- `upbank assertion` prints a `balance` directive which considers **pending** transactions.
+- `upbank-reconcile` clears transactions that were **pending** when you
   imported them, once Up settles or releases them.
 
 This project is not affiliated with or endorsed by Up or Bendigo and Adelaide
 Bank. It reads your data with a personal access token you create yourself; it
-never moves money.
+cannot and does not move money.
 
 ## Install
 
@@ -31,13 +31,26 @@ Python 3.10 or newer, and Beancount 3.
    export UPBANK_TOKEN=up:yeah:...
    ```
 
-2. Download recent transactions (the default is the last 60 days):
+   Put it in your .profile. 
+   Or, use [direnv](https://direnv.net/) for automagically loading, and unloading, environment variables per directory.
+
+   Test your token by pinging the upbank API:
+
+   ```
+   ❯  upbank ping
+   Ping!
+   {"meta":{"id":"123456abcd-8888-8888-8888-789efgh","statusEmoji":"⚡️"}}
+   ```
+
+2. Download recent transactions:
+
+   Download the last 30 days of UP transactions and save them at `/tmp/up.json`:
 
    ```
    upbank recent 30 > /tmp/up.json
    ```
 
-3. Write an importer script, `import.py`:
+3. Create an importer script, `import.py`:
 
    ```python
    from beangulp import Ingest
@@ -46,8 +59,8 @@ Python 3.10 or newer, and Beancount 3.
    Ingest([UpbankImporter("Assets:Bank:Up")])()
    ```
 
-4. Convert the download to Beancount. `-e` points at your ledger so
-   transactions you already have are marked as duplicates:
+4. Convert the downloaded json transactions to Beancount. `-e` points at your ledger so
+   that transactions you already have can be identified as duplicates:
 
    ```
    python import.py extract -e main.beancount /tmp/up.json > /tmp/up.beancount
@@ -82,9 +95,10 @@ same day. A percentage tolerance would merge, say, $1000.00 and $1000.50.
 Usage: upbank [OPTIONS] COMMAND [ARGS]...
 
 Options:
-  --token TEXT       Upbank personal access token. Prefer the UPBANK_TOKEN
-                     environment variable so the secret never appears on the
-                     command line or in logs.
+  --token TEXT       Upbank personal access token, or env:NAME to read it from
+                     environment variable NAME. Prefer the UPBANK_TOKEN
+                     environment variable (which may itself be env:NAME) so
+                     the secret never appears on the command line or in logs.
   --up-account TEXT  Which Up account to use, by id or display name (see
                      `upbank accounts`). Defaults to the first account Up
                      lists. This selects an account at Up; it is not a
@@ -133,6 +147,25 @@ account's transactions are left out of its ledger:
 ```python
 UpbankImporter("Assets:Bank:Up", account_id="<id from `upbank accounts`>")
 ```
+
+### More than one token
+
+If you have two tokens (say yours and a partner's), keep both in your
+environment and name the one to use with `env:NAME`, which reads the token from
+that variable. The secret itself still never appears on the command line:
+
+```
+export UPBANK_TOKEN_A=up:yeah:...
+export UPBANK_TOKEN_B=up:yeah:...
+
+upbank --token env:UPBANK_TOKEN_B recent 30
+UPBANK_TOKEN=env:UPBANK_TOKEN_B upbank recent 30    # same thing
+```
+
+Only one level is followed: a variable named by `env:` must hold the token
+itself. Up tokens start with `up:`; `upbank` warns (without printing the value)
+when a token does not, which usually means a variable name was passed without
+`env:`.
 
 ## Pending transactions and `upbank-reconcile`
 

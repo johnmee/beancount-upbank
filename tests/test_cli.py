@@ -4,6 +4,7 @@ The balance arithmetic itself is tested in test_client.py.
 """
 
 import datetime
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
@@ -75,11 +76,25 @@ class TwoAccountClient:
         return []
 
 
-def _invoke(monkeypatch, fake, *args, env=None):
-    monkeypatch.setattr(upbank_cli, "UpbankClient", lambda token: fake)
+def _invoke(monkeypatch, fake, *args, env=None, tokens=None):
+    """Run `upbank *args` against `fake`; append each token it gets to `tokens`."""
+
+    def make_client(token):
+        if tokens is not None:
+            tokens.append(token)
+        return fake
+
+    monkeypatch.setattr(upbank_cli, "UpbankClient", make_client)
     return CliRunner().invoke(
-        upbank_cli.cli, list(args), env={"UPBANK_TOKEN": "t", **(env or {})}
+        upbank_cli.cli,
+        list(args),
+        env={"UPBANK_TOKEN": "up:yeah:test", **(env or {})},
     )
+
+
+class PingClient:
+    def ping(self):
+        return SimpleNamespace(text="pong")
 
 
 def test_balance_shows_the_live_figure_unadjusted(monkeypatch):
@@ -127,6 +142,112 @@ def test_missing_token_is_a_usage_error():
     result = CliRunner().invoke(upbank_cli.cli, ["ping"], env={"UPBANK_TOKEN": ""})
     assert result.exit_code == 2
     assert "UPBANK_TOKEN" in result.output
+
+
+def _ping(monkeypatch, *args, env):
+    """Run `upbank *args ping`; return (result, tokens the client was given)."""
+    tokens = []
+    result = _invoke(monkeypatch, PingClient(), *args, "ping", env=env, tokens=tokens)
+    return result, tokens
+
+
+def test_token_env_reference_on_the_command_line_reads_that_variable(monkeypatch):
+    result, tokens = _ping(
+        monkeypatch, "--token", "env:OTHER", env={"OTHER": "up:yeah:b"}
+    )
+    assert result.exit_code == 0, result.output
+    assert tokens == ["up:yeah:b"]
+    assert result.stderr == ""
+
+
+def test_token_env_reference_in_upbank_token_reads_that_variable(monkeypatch):
+    result, tokens = _ping(
+        monkeypatch, env={"UPBANK_TOKEN": "env:OTHER", "OTHER": "up:yeah:b"}
+    )
+    assert result.exit_code == 0, result.output
+    assert tokens == ["up:yeah:b"]
+
+
+def test_literal_up_token_is_used_unchanged_without_warning(monkeypatch):
+    result, tokens = _ping(monkeypatch, env={"UPBANK_TOKEN": "up:yeah:a"})
+    assert result.exit_code == 0, result.output
+    assert tokens == ["up:yeah:a"]
+    assert result.stderr == ""
+
+
+def test_token_env_reference_to_unset_or_empty_variable_is_a_usage_error(
+    monkeypatch,
+):
+    # None unsets OTHER even if the shell running the tests exports it.
+    for other in (None, ""):
+        result, tokens = _ping(
+            monkeypatch, env={"UPBANK_TOKEN": "env:OTHER", "OTHER": other}
+        )
+        assert result.exit_code == 2
+        assert "Environment variable OTHER is unset or empty" in result.output
+        assert tokens == []
+
+
+def test_token_env_reference_without_a_name_is_a_usage_error(monkeypatch):
+    result, tokens = _ping(monkeypatch, env={"UPBANK_TOKEN": "env:"})
+    assert result.exit_code == 2
+    assert "names no environment variable" in result.output
+    assert tokens == []
+
+
+def test_token_env_reference_is_not_followed_twice(monkeypatch):
+    result, tokens = _ping(
+        monkeypatch, env={"UPBANK_TOKEN": "env:A", "A": "env:B", "B": "up:yeah:b"}
+    )
+    assert result.exit_code == 2
+    assert "Environment variable A holds another 'env:'" in result.output
+    assert tokens == []
+
+
+def test_literal_token_from_upbank_token_without_up_prefix_warns_but_runs(
+    monkeypatch,
+):
+    result, tokens = _ping(monkeypatch, env={"UPBANK_TOKEN": "s3cr3t"})
+    assert result.exit_code == 0, result.output
+    assert tokens == ["s3cr3t"]
+    assert result.stderr == (
+        'Warning: UPBANK_TOKEN does not start with "up:"; '
+        "did you mean UPBANK_TOKEN=env:NAME?\n"
+    )
+
+
+def test_literal_token_from_the_command_line_without_up_prefix_warns_but_runs(
+    monkeypatch,
+):
+    result, tokens = _ping(monkeypatch, "--token", "s3cr3t", env={})
+    assert result.exit_code == 0, result.output
+    assert tokens == ["s3cr3t"]
+    assert result.stderr == (
+        'Warning: --token does not start with "up:"; did you mean --token env:NAME?\n'
+    )
+
+
+def test_env_token_without_up_prefix_warns_naming_the_variable(monkeypatch):
+    result, tokens = _ping(
+        monkeypatch, env={"UPBANK_TOKEN": "env:OTHER", "OTHER": "s3cr3t"}
+    )
+    assert result.exit_code == 0, result.output
+    assert tokens == ["s3cr3t"]
+    assert result.stderr == 'Warning: OTHER does not start with "up:"\n'
+
+
+def test_help_needs_no_usable_token(monkeypatch):
+    for token in (None, "env:OTHER", "s3cr3t"):
+        result = _invoke(
+            monkeypatch,
+            PingClient(),
+            "recent",
+            "--help",
+            env={"UPBANK_TOKEN": token, "OTHER": None},
+        )
+        assert result.exit_code == 0, result.output
+        assert "Usage:" in result.output
+        assert result.stderr == ""
 
 
 def test_accounts_lists_every_account(monkeypatch):

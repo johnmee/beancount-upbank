@@ -1,10 +1,13 @@
 """The ``upbank`` command line."""
 
 import json
+import os
 import pprint
 from dataclasses import dataclass
+from functools import cached_property
 
 import click
+from click.core import ParameterSource
 
 from .client import (
     HELD,
@@ -25,19 +28,81 @@ class _Group(click.Group):
             raise click.ClickException(str(e)) from e
 
 
+ENV_PREFIX = "env:"
+UP_PREFIX = "up:"
+
+
+def _resolve_token(value: str, origin: str) -> str:
+    """Return the token, following a single ``env:NAME`` reference.
+
+    ``origin`` says where ``value`` came from (``--token`` or ``UPBANK_TOKEN``)
+    so a warning can suggest the right fix. Warns, without echoing the secret,
+    when the result does not look like an Up token, which begins with ``up:``.
+    """
+    name = None
+    if value.startswith(ENV_PREFIX):
+        name = value[len(ENV_PREFIX) :]
+        if not name:
+            raise click.UsageError(
+                f"{origin} '{ENV_PREFIX}' names no environment variable; "
+                f"use {ENV_PREFIX}NAME.",
+                click.get_current_context(silent=True),
+            )
+        value = os.environ.get(name, "")
+        if not value:
+            raise click.UsageError(
+                f"Environment variable {name} is unset or empty.",
+                click.get_current_context(silent=True),
+            )
+        if value.startswith(ENV_PREFIX):
+            raise click.UsageError(
+                f"Environment variable {name} holds another '{ENV_PREFIX}' "
+                "reference; only one level is followed.",
+                click.get_current_context(silent=True),
+            )
+    if not value.startswith(UP_PREFIX):
+        if name:
+            warning = f'{name} does not start with "{UP_PREFIX}"'
+        else:
+            fix = (
+                f"--token {ENV_PREFIX}NAME"
+                if origin == "--token"
+                else f"{origin}={ENV_PREFIX}NAME"
+            )
+            warning = f'{origin} does not start with "{UP_PREFIX}"; did you mean {fix}?'
+        click.echo(f"Warning: {warning}", err=True)
+    return value
+
+
 @dataclass
 class _Session:
-    client: UpbankClient
+    token: str | None
+    # Where the token came from, "--token" or "UPBANK_TOKEN", for messages.
+    token_origin: str
     # Which of the token's Up accounts to use: an id or a display name; or None.
     account: str | None
+
+    @cached_property
+    def client(self) -> UpbankClient:
+        """Build the client on first use, so `--help` never needs a token."""
+        if not self.token:
+            raise click.UsageError(
+                "No Upbank token supplied. Set the UPBANK_TOKEN environment "
+                "variable (preferred, keeps the secret off the command line) "
+                "or pass --token.",
+                click.get_current_context(silent=True),
+            )
+        return UpbankClient(_resolve_token(self.token, self.token_origin))
 
 
 @click.group(cls=_Group)
 @click.option(
     "--token",
     envvar="UPBANK_TOKEN",
-    help="Upbank personal access token. Prefer the UPBANK_TOKEN environment "
-    "variable so the secret never appears on the command line or in logs.",
+    help="Upbank personal access token, or env:NAME to read it from environment "
+    "variable NAME. Prefer the UPBANK_TOKEN environment variable (which may "
+    "itself be env:NAME) so the secret never appears on the command line or "
+    "in logs.",
 )
 @click.option(
     "--up-account",
@@ -49,12 +114,9 @@ class _Session:
 )
 @click.pass_context
 def cli(ctx, token, up_account):
-    if not token:
-        raise click.UsageError(
-            "No Upbank token supplied. Set the UPBANK_TOKEN environment variable "
-            "(preferred, keeps the secret off the command line) or pass --token."
-        )
-    ctx.obj = _Session(UpbankClient(token), up_account)
+    source = ctx.get_parameter_source("token")
+    origin = "UPBANK_TOKEN" if source == ParameterSource.ENVIRONMENT else "--token"
+    ctx.obj = _Session(token, origin, up_account)
 
 
 @cli.command()
