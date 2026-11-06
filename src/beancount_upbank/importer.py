@@ -6,11 +6,9 @@ import beangulp
 from beancount.core import amount, data
 from beangulp import cache
 
+from .client import CURRENCY
 from .dedup import exact_amount_comparator
 from .markers import HOLD_KEY, ID_KEY
-
-# Up only operates in AUD.
-CURRENCY = "AUD"
 
 # Up's TransactionStatusEnum. There is no terminal "released" state: a hold that
 # is cancelled rather than settled simply disappears from the API.
@@ -28,7 +26,6 @@ class UpbankImporter(beangulp.Importer):
         account_name="Assets:Bank:Upbank",
         tags=data.EMPTY_SET,
         account_id=None,
-        currency=CURRENCY,
     ):
         """
         Args:
@@ -38,12 +35,10 @@ class UpbankImporter(beangulp.Importer):
                 set, transactions belonging to any other Up account in the file
                 are skipped, so a saver's transactions cannot leak into this
                 account's ledger. When None, every transaction is imported.
-            currency: the currency of the account.
         """
         self.account_name = account_name
         self.tags = tags
         self.account_id = account_id
-        self.currency = currency
 
     # Upbank posts exact amounts, so only exactly-equal amounts are duplicates
     # (see dedup.exact_amount_comparator); a percentage tolerance would falsely
@@ -121,7 +116,7 @@ class UpbankImporter(beangulp.Importer):
                     raw_text += " " + message
             value = amount.Amount(
                 beancount.core.number.D(trans["attributes"]["amount"]["value"]),
-                self.currency,
+                CURRENCY,
             )
             posting = data.Posting(self.account_name, value, None, None, None, None)
 

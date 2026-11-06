@@ -16,7 +16,7 @@ import json
 
 from click.testing import CliRunner
 
-from beancount_upbank.reconcile_cli import cli
+from beancount_upbank.cli import cli
 
 ACCOUNT = "Assets:Bank:Alice-Upbank"
 
@@ -61,37 +61,80 @@ def _pull(status, value, settled="2026-09-03T09:00:00+10:00", up_id="held-exampl
     ]
 
 
-def _run(tmp_path, ledger_text, pull, *extra, root=True):
+def _invoke(*args):
+    # A pull file means no request is made, so no token is needed.
+    return CliRunner().invoke(
+        cli, ["reconcile", *map(str, args)], env={"UPBANK_TOKEN": ""}
+    )
+
+
+def _run(tmp_path, ledger_text, pull, *extra):
     ledger = tmp_path / "ledger.beancount"
     ledger.write_text(ledger_text)
     pull_path = tmp_path / "pull.json"
     pull_path.write_text(json.dumps(pull))
-    # These fixtures are self-contained, so the file under edit is also its own
-    # root. A ledger that is `include`d by a main ledger must be given the main
-    # ledger with --root.
-    root_args = ["--root", str(ledger)] if root else []
-    result = CliRunner().invoke(
-        cli,
-        [str(ledger), str(pull_path), *root_args, "--account", ACCOUNT, *extra],
+    return _invoke(ACCOUNT, ledger, "--pull", pull_path, *extra), ledger
+
+
+def _split_ledger(tmp_path, anchor):
+    """A main ledger that includes two files: the hold, and a snapshot it moves."""
+    main = tmp_path / "main.beancount"
+    main.write_text('include "other.beancount"\ninclude "up.beancount"\n')
+    other = tmp_path / "other.beancount"
+    other.write_text(
+        """\
+2000-01-01 open Assets:Bank:Alice-Upbank
+2000-01-01 open Expenses:Food:Alcohol
+2000-01-01 open Equity:Opening
+
+2026-08-01 * "seed"
+  Assets:Bank:Alice-Upbank   1000.00 AUD
+  Equity:Opening
+
+2026-09-02 balance Assets:Bank:Alice-Upbank    970.00 AUD
+"""
     )
-    return result, ledger
+    up = tmp_path / "up.beancount"
+    up.write_text(
+        f"""\
+2026-09-01 * "Example Brewing Co." "EXAMPLE BREW, SYDNEY"
+  up_hold: "held-example"
+  Assets:Bank:Alice-Upbank    -30.00 AUD
+  Expenses:Food:Alcohol
+
+2026-09-06 balance Assets:Bank:Alice-Upbank    {anchor} AUD
+"""
+    )
+    pull = tmp_path / "pull.json"
+    pull.write_text(json.dumps(_pull("SETTLED", "-31.25")))
+    return main, up, other, pull
 
 
-def test_root_defaults_to_the_ledger_itself(tmp_path):
-    text = LEDGER.format(anchor="968.75")
-    pull = _pull("SETTLED", "-31.25")
-    (tmp_path / "again").mkdir()
-    explicit, explicit_path = _run(tmp_path, text, pull, "--fix")
-    implicit, implicit_path = _run(tmp_path / "again", text, pull, "--fix", root=False)
-    assert explicit.exit_code == implicit.exit_code == 0, implicit.output
-    assert implicit_path.read_text() == explicit_path.read_text()
+def test_edits_land_in_the_included_files_that_hold_them(tmp_path):
+    # The main ledger is all the command is given.
+    main, up, other, pull = _split_ledger(tmp_path, "968.75")
+    result = _invoke(ACCOUNT, main, "--pull", pull)
+    assert result.exit_code == 0, result.output
+    assert "-31.25 AUD" in up.read_text()
+    assert "up_hold" not in up.read_text()
+    assert "968.75 AUD" in other.read_text(), "the other file's snapshot moved"
+    assert "Verified against the untouched 2026-09-06 assertion" in result.output
+
+
+def test_a_rollback_restores_every_file_it_edited(tmp_path):
+    main, up, other, pull = _split_ledger(tmp_path, "900.00")
+    before = {path: path.read_text() for path in (up, other)}
+    result = _invoke(ACCOUNT, main, "--pull", pull)
+    assert result.exit_code == 1
+    assert "Rolled back" in result.output
+    assert {path: path.read_text() for path in (up, other)} == before
 
 
 def test_drifted_hold_is_promoted_in_place(tmp_path):
     # Settled $1.25 above the hold. The posting is corrected, the tag removed, and
     # the annotation and narration are untouched.
     result, ledger = _run(
-        tmp_path, LEDGER.format(anchor="968.75"), _pull("SETTLED", "-31.25"), "--fix"
+        tmp_path, LEDGER.format(anchor="968.75"), _pull("SETTLED", "-31.25")
     )
     assert result.exit_code == 0, result.output
     text = ledger.read_text()
@@ -114,7 +157,6 @@ def test_released_hold_is_commented_out(tmp_path):
         tmp_path,
         LEDGER.format(anchor="1000.00"),
         _pull("SETTLED", "-9.99", up_id="some-other-transaction"),
-        "--fix",
     )
     assert result.exit_code == 0, result.output
     text = ledger.read_text()
@@ -126,9 +168,7 @@ def test_wrong_conclusion_rolls_back(tmp_path):
     # The anchor says the money never came back, so treating the hold as
     # released must fail loudly and leave the ledger untouched.
     original = LEDGER.format(anchor="970.00")
-    result, ledger = _run(
-        tmp_path, original, _pull("SETTLED", "-9.99", up_id="other"), "--fix"
-    )
+    result, ledger = _run(tmp_path, original, _pull("SETTLED", "-9.99", up_id="other"))
     assert result.exit_code != 0
     assert "Rolled back" in result.output
     assert ledger.read_text() == original, "ledger restored exactly"
@@ -137,7 +177,7 @@ def test_wrong_conclusion_rolls_back(tmp_path):
 
 def test_still_held_is_reported_and_left_alone(tmp_path):
     result, ledger = _run(
-        tmp_path, LEDGER.format(anchor="970.00"), _pull("HELD", "-30.00"), "--fix"
+        tmp_path, LEDGER.format(anchor="970.00"), _pull("HELD", "-30.00")
     )
     assert result.exit_code == 0, result.output
     assert "still unsettled" in result.output
@@ -149,7 +189,7 @@ def test_stale_hold_is_flagged(tmp_path):
     stale = LEDGER.format(anchor="970.00").replace("2026-09-01", "2026-08-01")
     pull = _pull("HELD", "-30.00")
     pull[0]["attributes"]["createdAt"] = "2026-08-01T18:31:26+10:00"
-    result, _ = _run(tmp_path, stale, pull, "--fix")
+    result, _ = _run(tmp_path, stale, pull)
     assert result.exit_code == 0, result.output
     assert "!!" in result.output
     assert "pending for more than 7 days" in result.output
@@ -157,9 +197,9 @@ def test_stale_hold_is_flagged(tmp_path):
 
 def test_dry_run_changes_nothing(tmp_path):
     original = LEDGER.format(anchor="968.75")
-    result, ledger = _run(tmp_path, original, _pull("SETTLED", "-31.25"))
+    result, ledger = _run(tmp_path, original, _pull("SETTLED", "-31.25"), "--dry-run")
     assert result.exit_code == 0, result.output
-    assert "pending; re-run with --fix" in result.output
+    assert "pending; re-run without --dry-run" in result.output
     assert ledger.read_text() == original
 
 
@@ -190,7 +230,6 @@ def test_released_hold_outside_the_window_is_identified_by_the_gap(tmp_path):
         tmp_path,
         AGED.format(anchor="1000.00"),  # the 12.00 came back
         _pull("SETTLED", "-31.25"),
-        "--fix",
     )
     assert result.exit_code == 0, result.output
     assert "a gap of 12.00 AUD" in result.output
@@ -203,7 +242,7 @@ def test_released_hold_outside_the_window_is_identified_by_the_gap(tmp_path):
 
 def test_gap_that_matches_no_hold_is_not_blamed_on_one(tmp_path):
     result, _ = _run(
-        tmp_path, AGED.format(anchor="1007.00"), _pull("SETTLED", "-31.25"), "--fix"
+        tmp_path, AGED.format(anchor="1007.00"), _pull("SETTLED", "-31.25")
     )
     assert result.exit_code == 0, result.output
     assert "a gap of 19.00 AUD" in result.output
@@ -211,9 +250,7 @@ def test_gap_that_matches_no_hold_is_not_blamed_on_one(tmp_path):
 
 
 def test_no_gap_reports_nothing(tmp_path):
-    result, _ = _run(
-        tmp_path, AGED.format(anchor="988.00"), _pull("SETTLED", "-31.25"), "--fix"
-    )
+    result, _ = _run(tmp_path, AGED.format(anchor="988.00"), _pull("SETTLED", "-31.25"))
     assert result.exit_code == 0, result.output
     assert "gap of" not in result.output
 
@@ -229,15 +266,15 @@ def test_still_held_is_never_blamed_for_a_gap(tmp_path):
     )
     pull = _pull("HELD", "-12.00", up_id="still-held")
     pull[0]["attributes"]["createdAt"] = "2026-09-01T10:00:00+10:00"
-    result, _ = _run(tmp_path, ledger, pull, "--fix")
+    result, _ = _run(tmp_path, ledger, pull)
     assert result.exit_code == 0, result.output
     assert "released them and put the money back" not in result.output
 
 
-def test_broken_intermediate_assertion_rolls_back(tmp_path):
-    # When a hold was released *before* an intermediate snapshot, that snapshot
-    # already reflects the money back and must not be adjusted again. Verifying
-    # only the anchor would miss the break and report success.
+def test_a_snapshot_taken_after_the_release_is_left_alone(tmp_path):
+    # Up keeps no record of when a hold was released. The 09-02 snapshot was
+    # taken while it was live and moves; the 09-04 one already has the money
+    # back -- it fails until the entry is commented out -- so it stays.
     ledger = """\
 2000-01-01 open Assets:Bank:Alice-Upbank
 2000-01-01 open Expenses:Food:Alcohol
@@ -252,17 +289,30 @@ def test_broken_intermediate_assertion_rolls_back(tmp_path):
   Assets:Bank:Alice-Upbank    -30.00 AUD
   Expenses:Food:Alcohol
 
+2026-09-02 balance Assets:Bank:Alice-Upbank    970.00 AUD
+
 2026-09-04 balance Assets:Bank:Alice-Upbank   1000.00 AUD
 
 2026-09-06 balance Assets:Bank:Alice-Upbank   1000.00 AUD
 """
-    original = ledger
-    result, path = _run(
-        tmp_path, ledger, _pull("SETTLED", "-9.99", up_id="other"), "--fix"
+    result, path = _run(tmp_path, ledger, _pull("SETTLED", "-9.99", up_id="other"))
+    assert result.exit_code == 0, result.output
+    after = path.read_text()
+    assert "2026-09-02 balance Assets:Bank:Alice-Upbank   1000.00 AUD" in after
+    assert "2026-09-04 balance Assets:Bank:Alice-Upbank   1000.00 AUD" in after
+
+
+def test_a_snapshot_failing_for_another_reason_still_rolls_back(tmp_path):
+    # Left alone because it already fails, but leaving it alone does not make
+    # it pass: the verification catches it rather than reporting success.
+    ledger = LEDGER.format(anchor="1000.00").replace(
+        "2026-09-02 balance Assets:Bank:Alice-Upbank    970.00 AUD",
+        "2026-09-02 balance Assets:Bank:Alice-Upbank    555.00 AUD",
     )
-    assert result.exit_code != 0, result.output
+    result, path = _run(tmp_path, ledger, _pull("SETTLED", "-9.99", up_id="other"))
+    assert result.exit_code == 1
     assert "Rolled back" in result.output
-    assert path.read_text() == original
+    assert path.read_text() == ledger
 
 
 def test_transfer_leg_is_reported_not_edited(tmp_path):
@@ -285,7 +335,7 @@ def test_transfer_leg_is_reported_not_edited(tmp_path):
 2026-09-06 balance Assets:Bank:Alice-Upbank    970.00 AUD
 """
     original = ledger
-    result, path = _run(tmp_path, ledger, _pull("SETTLED", "-31.25"), "--fix")
+    result, path = _run(tmp_path, ledger, _pull("SETTLED", "-31.25"))
     assert result.exit_code == 0, result.output
     assert "transfer between own accounts" in result.output
     assert path.read_text() == original, "transfer legs are left alone"
@@ -294,6 +344,254 @@ def test_transfer_leg_is_reported_not_edited(tmp_path):
 def test_settled_without_a_timestamp_is_treated_as_pending(tmp_path):
     pull = _pull("SETTLED", "-31.25")
     pull[0]["attributes"]["settledAt"] = None
-    result, path = _run(tmp_path, LEDGER.format(anchor="970.00"), pull, "--fix")
+    result, path = _run(tmp_path, LEDGER.format(anchor="970.00"), pull)
     assert result.exit_code == 0, result.output
     assert "up_hold" in path.read_text(), "undated settlement stays provisional"
+
+
+class FakeUp:
+    """Stands in for UpbankClient in the fetch-from-Up mode."""
+
+    def __init__(self, balance, transactions):
+        self.balance = balance
+        self.pulled = transactions
+        self.since = []
+
+    def accounts(self):
+        return [{"id": "acct-1", "attributes": {"balance": {"value": self.balance}}}]
+
+    def transactions(self, since, until=None, status=None, account_id=None):
+        self.since.append(since)
+        return self.pulled
+
+
+def _fetch(monkeypatch, tmp_path, ledger_text, fake, *extra):
+    from beancount_upbank import cli as upbank_cli
+
+    monkeypatch.setattr(upbank_cli, "UpbankClient", lambda token: fake)
+    ledger = tmp_path / "ledger.beancount"
+    ledger.write_text(ledger_text)
+    result = CliRunner().invoke(
+        cli,
+        ["reconcile", ACCOUNT, str(ledger), *extra],
+        env={"UPBANK_TOKEN": "up:yeah:test"},
+    )
+    return result, ledger
+
+
+def test_without_a_pull_it_asks_up_and_writes_todays_directive(
+    monkeypatch, tmp_path, pinned_today
+):
+    fake = FakeUp("968.75", _pull("SETTLED", "-31.25"))
+    result, ledger = _fetch(monkeypatch, tmp_path, LEDGER.format(anchor="968.75"), fake)
+    assert result.exit_code == 0, result.output
+    text = ledger.read_text()
+    assert "up_hold" not in text
+    last = text.rstrip("\n").splitlines()[-1]
+    assert last.startswith(f"{pinned_today} balance {ACCOUNT}")
+    assert last.endswith(" 968.75 AUD")
+    assert "Verified against Up's balance (968.75 AUD)" in result.output
+    # The fetch reaches back to the oldest hold, so its absence would be real.
+    assert {s.date().isoformat() for s in fake.since} == {"2026-09-01"}
+
+
+def test_a_directive_already_dated_today_is_replaced_not_duplicated(
+    monkeypatch, tmp_path, pinned_today
+):
+    text = LEDGER.format(anchor="968.75") + (
+        f"\n{pinned_today} balance Assets:Bank:Alice-Upbank    970.00 AUD\n"
+    )
+    fake = FakeUp("968.75", _pull("SETTLED", "-31.25"))
+    result, ledger = _fetch(monkeypatch, tmp_path, text, fake)
+    assert result.exit_code == 0, result.output
+    after = ledger.read_text()
+    assert after.count(f"{pinned_today} balance") == 1
+    assert "970.00" not in after.split(str(pinned_today))[-1]
+
+
+def test_a_hold_older_than_any_transaction_is_judged_not_skipped(
+    monkeypatch, tmp_path, pinned_today
+):
+    # Up returned nothing at all, but it was asked from the hold's date, so the
+    # hold's absence is real: it was released, and the balance confirms it.
+    fake = FakeUp("1000.00", [])
+    result, ledger = _fetch(monkeypatch, tmp_path, LEDGER.format(anchor="970.00"), fake)
+    assert result.exit_code == 0, result.output
+    assert "released, never settled" in result.output
+    assert ';  up_hold: "held-example"' in ledger.read_text()
+
+
+def test_a_failed_check_also_takes_the_new_directive_back_out(
+    monkeypatch, tmp_path, pinned_today
+):
+    original = LEDGER.format(anchor="970.00")
+    fake = FakeUp("500.00", _pull("HELD", "-30.00"))
+    result, ledger = _fetch(monkeypatch, tmp_path, original, fake)
+    assert result.exit_code == 1
+    assert "Rolled back" in result.output
+    assert ledger.read_text() == original
+
+
+def test_with_no_holds_it_still_writes_todays_directive(
+    monkeypatch, tmp_path, pinned_today
+):
+    settled = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
+    fake = FakeUp("970.00", [])
+    result, ledger = _fetch(monkeypatch, tmp_path, settled, fake)
+    assert result.exit_code == 0, result.output
+    assert ledger.read_text().rstrip().endswith("970.00 AUD")
+    assert str(pinned_today) in ledger.read_text()
+
+
+def test_fetch_dry_run_changes_nothing(monkeypatch, tmp_path, pinned_today):
+    original = LEDGER.format(anchor="968.75")
+    fake = FakeUp("968.75", _pull("SETTLED", "-31.25"))
+    result, ledger = _fetch(monkeypatch, tmp_path, original, fake, "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "append" in result.output
+    assert ledger.read_text() == original
+
+
+def test_nothing_to_change_says_so(monkeypatch, tmp_path, pinned_today):
+    settled = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
+    settled += f"\n{pinned_today} balance Assets:Bank:Alice-Upbank    970.00 AUD\n"
+    result, ledger = _fetch(monkeypatch, tmp_path, settled, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert "Nothing to change." in result.output
+    assert ledger.read_text() == settled
+
+
+def test_a_crlf_ledger_stays_crlf(monkeypatch, tmp_path, pinned_today):
+    from beancount_upbank import cli as upbank_cli
+
+    monkeypatch.setattr(
+        upbank_cli,
+        "UpbankClient",
+        lambda token: FakeUp("968.75", _pull("SETTLED", "-31.25")),
+    )
+    ledger = tmp_path / "ledger.beancount"
+    ledger.write_bytes(LEDGER.format(anchor="968.75").replace("\n", "\r\n").encode())
+    result = CliRunner().invoke(
+        cli, ["reconcile", ACCOUNT, str(ledger)], env={"UPBANK_TOKEN": "up:yeah:test"}
+    )
+    assert result.exit_code == 0, result.output
+    assert b"\n" not in ledger.read_bytes().replace(b"\r\n", b"")
+
+
+def test_an_included_file_given_alone_is_refused_up_front(tmp_path):
+    _, up, _, pull = _split_ledger(tmp_path, "968.75")
+    before = up.read_text()
+    result = _invoke(ACCOUNT, up, "--pull", pull)
+    assert result.exit_code == 1
+    assert "never opens Assets:Bank:Alice-Upbank" in result.output
+    assert "Rolled back" not in result.output
+    assert up.read_text() == before
+
+
+def test_two_directives_for_today_are_refused(monkeypatch, tmp_path, pinned_today):
+    line = f"\n{pinned_today} balance Assets:Bank:Alice-Upbank    970.00 AUD\n"
+    original = LEDGER.format(anchor="970.00") + line + line
+    result, ledger = _fetch(monkeypatch, tmp_path, original, FakeUp("970.00", []))
+    assert result.exit_code == 1
+    assert "2 balance directives dated 2026-09-07" in result.output
+    assert ledger.read_text() == original
+
+
+def test_todays_directive_follows_the_import_into_a_new_file(
+    monkeypatch, tmp_path, pinned_today
+):
+    # The newest balance directive is in last year's file, but the import has
+    # moved on to a new one; a transfer in another bank's file is newer still.
+    from beancount_upbank import cli as upbank_cli
+
+    monkeypatch.setattr(upbank_cli, "UpbankClient", lambda token: FakeUp("950.00", []))
+    main = tmp_path / "main.beancount"
+    main.write_text(
+        'include "old.beancount"\ninclude "new.beancount"\ninclude "bank.beancount"\n'
+    )
+    old = tmp_path / "old.beancount"
+    old.write_text(
+        """\
+2000-01-01 open Assets:Bank:Alice-Upbank
+2000-01-01 open Assets:Bank:Other
+2000-01-01 open Expenses:Food
+2000-01-01 open Equity:Opening
+
+2026-08-01 * "seed"
+  Assets:Bank:Alice-Upbank   1000.00 AUD
+  Equity:Opening
+
+2026-09-02 balance Assets:Bank:Alice-Upbank    1000.00 AUD
+"""
+    )
+    new = tmp_path / "new.beancount"
+    new.write_text(
+        """\
+2026-09-05 * "Lunch"
+  Assets:Bank:Alice-Upbank   -20.00 AUD
+  Expenses:Food
+"""
+    )
+    bank = tmp_path / "bank.beancount"
+    bank.write_text(
+        """\
+2026-09-06 * "To Up"
+  Assets:Bank:Other          30.00 AUD
+  Assets:Bank:Alice-Upbank  -30.00 AUD
+"""
+    )
+    result = CliRunner().invoke(
+        cli, ["reconcile", ACCOUNT, str(main)], env={"UPBANK_TOKEN": "up:yeah:test"}
+    )
+    assert result.exit_code == 0, result.output
+    assert f"{pinned_today} balance" in new.read_text()
+    assert f"{pinned_today} balance" not in old.read_text() + bank.read_text()
+
+
+def test_a_snapshot_between_two_releases_moves_for_the_later_one_only(tmp_path):
+    # A was released before the 09-05 snapshot, B after it. The snapshot fails
+    # by A's 30.00 before the run, so it moves for B alone.
+    ledger = """\
+2000-01-01 open Assets:Bank:Alice-Upbank
+2000-01-01 open Expenses:Food
+2000-01-01 open Equity:Opening
+
+2026-08-01 * "seed"
+  Assets:Bank:Alice-Upbank   1000.00 AUD
+  Equity:Opening
+
+2026-09-01 * "A"
+  up_hold: "a"
+  Assets:Bank:Alice-Upbank    -30.00 AUD
+  Expenses:Food
+
+2026-09-03 * "B"
+  up_hold: "b"
+  Assets:Bank:Alice-Upbank    -10.00 AUD
+  Expenses:Food
+
+2026-09-05 balance Assets:Bank:Alice-Upbank    990.00 AUD
+
+2026-09-06 balance Assets:Bank:Alice-Upbank   1000.00 AUD
+"""
+    # Two unrelated transactions frame the window; both holds are absent.
+    pull = _pull("SETTLED", "-1.00", up_id="first")
+    late = _pull("SETTLED", "-1.00", up_id="last")[0]
+    late["attributes"]["createdAt"] = "2026-09-06T09:00:00+10:00"
+    result, path = _run(tmp_path, ledger, [*pull, late])
+    assert result.exit_code == 0, result.output
+    assert (
+        "2026-09-05 balance Assets:Bank:Alice-Upbank   1000.00 AUD" in path.read_text()
+    )
+
+
+def test_the_runs_own_edits_are_not_reported_as_a_gap(tmp_path):
+    # A rollback for an unrelated broken snapshot must not blame a gap the
+    # run's own released hold accounts for.
+    ledger = LEDGER.format(anchor="1000.00").replace(
+        "2026-09-02 balance Assets:Bank:Alice-Upbank    970.00 AUD",
+        "2026-09-02 balance Assets:Bank:Alice-Upbank    555.00 AUD",
+    )
+    result, _ = _run(tmp_path, ledger, _pull("SETTLED", "-9.99", up_id="other"))
+    assert result.exit_code == 1
+    assert "gap of" not in result.output

@@ -1,7 +1,8 @@
-"""The ``upbank-reconcile`` command line.
+"""What ``upbank reconcile`` does and says.
 
 The reconciling itself lives in reconcile.py, which prints nothing and knows
-nothing of click. This module reports its findings and applies them.
+nothing of click. This module reports its findings and applies them; the
+command's arguments are declared with the rest of ``upbank`` in cli.py.
 """
 
 import datetime
@@ -10,7 +11,9 @@ import os
 
 import click
 from beancount import loader
+from beancount.core import amount, data
 
+from . import client
 from .markers import HOLD_KEY
 from .reconcile import (
     DRIFTED,
@@ -18,17 +21,28 @@ from .reconcile import (
     SETTLED_SAME,
     STALE_DAYS,
     UNVERIFIABLE,
+    Files,
     ReconcileError,
     apply_edits,
+    check_opened,
     explain,
     failing_assertions,
+    format_balance,
     newest_assertion,
+    oldest_hold,
+    place_assertion,
     plan,
-    read_ledger,
     resolve,
+    restore,
     shortfall_at,
-    write_ledger,
 )
+
+
+def _at(path, lineno=None):
+    """A file (and line) as a message shows it: relative to here when inside."""
+    rel = os.path.relpath(path)
+    shown = path if rel.startswith("..") else rel
+    return shown if lineno is None else f"{shown}:{lineno}"
 
 
 def report(findings, today):
@@ -39,7 +53,7 @@ def report(findings, today):
             f"!! {finding.entry.date}  "
             f"{(finding.entry.payee or '')[:34]:34} {finding.was} AUD  "
             f"transfer between own accounts -- not touched, fix by hand\n"
-            f"   {finding.entry.meta['filename']}:{finding.entry.meta['lineno']}"
+            f"   {_at(finding.entry.meta['filename'], finding.entry.meta['lineno'])}"
         )
     resolved = [f for f in findings if f.editable]
     for finding in resolved:
@@ -86,7 +100,7 @@ def report(findings, today):
     return pending
 
 
-def report_shortfall(entries, account, anchor, pending):
+def report_shortfall(entries, account, anchor, pending, planned=0):
     """Explain any gap between Up's reported balance and the ledger's.
 
     When Up releases a hold it puts the money back, so the account balance it
@@ -97,7 +111,8 @@ def report_shortfall(entries, account, anchor, pending):
     """
     if anchor is None:
         return
-    gap = shortfall_at(entries, account, anchor)
+    # What the run's own edits would have closed is not part of the mystery.
+    gap = shortfall_at(entries, account, anchor) - planned
     if not gap:
         return
 
@@ -109,7 +124,8 @@ def report_shortfall(entries, account, anchor, pending):
 
     click.echo(
         f"\nUp reports {anchor.amount.number} AUD at {anchor.date}, "
-        f"but the ledger accumulates {anchor.amount.number - gap} AUD "
+        f"but the ledger{' with these edits' if planned else ''} accumulates "
+        f"{anchor.amount.number - gap} AUD "
         f"-- a gap of {gap} AUD."
     )
     culprits = explain(gap, pending)
@@ -122,7 +138,7 @@ def report_shortfall(entries, account, anchor, pending):
             click.echo(
                 f"     {finding.entry.date}  "
                 f"{(finding.entry.payee or '')[:34]:34} {finding.was} AUD  "
-                f"{finding.entry.meta['filename']}:{finding.entry.meta['lineno']}"
+                f"{_at(finding.entry.meta['filename'], finding.entry.meta['lineno'])}"
             )
         click.echo(
             "   Comment the entr(ies) out and add the same amount to every "
@@ -135,116 +151,122 @@ def report_shortfall(entries, account, anchor, pending):
         )
 
 
-class _Command(click.Command):
-    """Report a ReconcileError as a clean command-line error, not a traceback."""
+def run(account, root, pull, dry_run, snapshot):
+    """Reconcile ``account``'s provisional entries across the ledger at ``root``.
 
-    def invoke(self, ctx):
-        try:
-            return super().invoke(ctx)
-        except ReconcileError as e:
-            raise click.ClickException(str(e)) from e
-
-
-@click.command(cls=_Command)
-@click.argument("ledger", type=click.Path(exists=True, dir_okay=False))
-@click.argument("pull", type=click.Path(exists=True, dir_okay=False))
-@click.option(
-    "--account",
-    required=True,
-    help="Beancount account the Up transactions post to.",
-)
-@click.option(
-    "--root",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Top-level ledger to load for balance semantics. Defaults to LEDGER, "
-    "which is right when your ledger is one file. If LEDGER is `include`d by a "
-    "main ledger, name that here: a sub-ledger loaded on its own has no "
-    "opening balance, so every assertion in it would appear to fail.",
-)
-@click.option(
-    "--fix/--dry-run",
-    default=False,
-    help="Apply the edits. The default only reports them.",
-)
-def cli(ledger, pull, account, root, fix):
-    """Promote settled holds in LEDGER using a fresh Up PULL (json)."""
-    if root is None:
-        root = ledger
-    with open(pull) as fh:
-        transactions = json.load(fh)
+    ``pull`` is a path to Up's JSON, or None to ask Up now: ``snapshot(since)``
+    must then return ``(today, opening balance, transactions since `since`)``
+    as one consistent read, and today's ``balance`` directive is written from
+    it, so the verification has evidence that postdates every release.
+    """
     entries, _, _ = loader.load_file(root)
-    # Balances are computed over the whole ledger; edits are confined to the one
-    # file whose lines we hold.
-    target = os.path.abspath(ledger)
-    findings = resolve(entries, transactions, account, target)
+    check_opened(entries, account, root)
+    today = client.sydney_today()
+    fresh = None
+    if pull is not None:
+        with open(pull) as fh:
+            transactions = json.load(fh)
+        window = None
+    else:
+        since = oldest_hold(entries, account) or today
+        today, fresh, transactions = snapshot(since)
+        window = (since, today)
+    findings = resolve(entries, transactions, account, window)
 
-    if not findings:
+    if not findings and fresh is None:
         click.echo(f"No provisional ({HOLD_KEY}) entries in the ledger.")
         return
 
-    today = datetime.date.today()
     pending = report(findings, today)
 
-    lines = read_ledger(ledger)
-    anchor = newest_assertion(entries, account)
-    edits, balances, unreachable = plan(
-        entries, findings, lines, account, anchor, target
-    )
+    files = Files()
+    append = None
+    if fresh is None:
+        anchor = newest_assertion(entries, account)
+    else:
+        existing, target = place_assertion(entries, account, today)
+        meta = dict(existing.meta) if existing else {}
+        anchor = data.Balance(
+            meta, today, account, amount.Amount(fresh, client.CURRENCY), None, None
+        )
+    edits, balances, unreachable = plan(entries, findings, files, account, anchor)
 
     for other in unreachable:
         click.echo(
-            f"\n!! {other.meta['filename']}:{other.meta['lineno']}: this "
-            f"assertion needs adjusting too but is outside {ledger}; "
+            f"\n!! {_at(other.meta['filename'], other.meta['lineno'])}: this "
+            f"assertion needs adjusting too but was not read from a file; "
             f"fix it by hand."
         )
 
-    if not edits:
+    for (path, lineno), number in sorted(balances.items()):
+        click.echo(
+            f"\n  {_at(path, lineno)}: balance directive -> {number} AUD "
+            f"(that snapshot included the hold)"
+        )
+
+    if fresh is not None:
+        line = format_balance(today, account, fresh)
+        if existing is None:
+            files[target]
+            append = (target, line)
+            click.echo(f"\n  {_at(target)}: append  {line}")
+        elif existing.amount.number != fresh:
+            where = (existing.meta["filename"], existing.meta["lineno"])
+            files[where[0]]
+            balances[where] = fresh
+            click.echo(f"\n  {_at(*where)}: replace with  {line}")
+
+    if not edits and not balances and append is None:
         # Nothing to promote, but a gap against Up's balance still needs
         # explaining -- a hold released after ageing out of the pull window
         # leaves no other trace.
         report_shortfall(entries, account, anchor, pending)
+        if anchor is not None and not shortfall_at(entries, account, anchor):
+            click.echo("\nNothing to change.")
         return
 
-    for lineno, number in sorted(balances.items()):
-        click.echo(
-            f"\n  balance directive line {lineno} -> {number} AUD "
-            f"(that snapshot included the hold)"
-        )
-
-    if not fix:
-        click.echo(f"\n{len(edits)} line edit(s) pending; re-run with --fix.")
+    if dry_run:
+        changes = len(edits) + len(balances) + (append is not None)
+        click.echo(f"\n{changes} line edit(s) pending; re-run without --dry-run.")
         return
 
     # Our edits can only move assertions dated after the earliest entry we
-    # touch, so that is the horizon we hold ourselves to.
-    since = min(f.entry.date for f in findings if f.editable)
+    # touch, and today's directive is dated today, so that is the horizon we
+    # hold ourselves to.
+    touched = [f.entry.date for f in findings if f.editable]
+    if fresh is not None:
+        touched.append(today - datetime.timedelta(days=1))
+    since = min(touched)
     try:
-        apply_edits(ledger, lines, edits, balances, account)
+        apply_edits(files, edits, balances, account, append)
         failures = failing_assertions(root, account, since)
     except BaseException:
-        # Including Ctrl-C: the original exists only in memory, so put it back
-        # before it is lost.
-        write_ledger(ledger, lines)
+        # Including Ctrl-C: the originals exist only in memory, so put them
+        # back before they are lost.
+        restore(files)
         raise
     if not failures:
-        click.echo(
-            f"\nApplied. Verified against the untouched {anchor.date} "
-            f"assertion ({anchor.amount.number} AUD)."
-            if anchor
-            else "\nApplied (no balance directive to verify against)."
-        )
+        if fresh is not None:
+            click.echo(f"\nApplied. Verified against Up's balance ({fresh} AUD).")
+        elif anchor is not None:
+            click.echo(
+                f"\nApplied. Verified against the untouched {anchor.date} "
+                f"assertion ({anchor.amount.number} AUD)."
+            )
+        else:
+            click.echo("\nApplied (no balance directive to verify against).")
         return
 
-    write_ledger(ledger, lines)
+    restore(files)
     # The edits were sound as far as the API could tell, so a residual gap is
     # most likely a hold that aged out of the window and was released unseen.
-    report_shortfall(entries, account, anchor, pending)
+    planned = (
+        sum((f.delta for f in findings if f.editable and f.entry.date < anchor.date), 0)
+        if anchor is not None
+        else 0
+    )
+    report_shortfall(entries, account, anchor, pending, planned)
     raise ReconcileError(
         "Rolled back -- these balance assertions do not hold after the edits:\n"
         + "\n".join(f"  {f.message}" for f in failures)
     )
-
-
-if __name__ == "__main__":
-    cli()

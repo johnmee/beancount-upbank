@@ -37,7 +37,6 @@ Issues = "https://github.com/johnmee/beancount-upbank/issues"
 
 [project.scripts]
 upbank = "beancount_upbank.cli:cli"
-upbank-reconcile = "beancount_upbank.reconcile_cli:cli"
 
 [dependency-groups]
 dev = [

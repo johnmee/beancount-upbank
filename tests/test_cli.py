@@ -102,22 +102,36 @@ def test_balance_prints_only_the_live_amount_and_currency(monkeypatch):
     assert result.stdout == "145.00 AUD\n"
 
 
-def test_balance_midnight_backs_out_todays_transactions(monkeypatch, pinned_today):
+def test_balance_account_prints_a_midnight_directive(monkeypatch, pinned_today):
     pulled = [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     fake = FakeClient(["160.00", "160.00"], [pulled, pulled])
-    result = _invoke(monkeypatch, fake, "balance", "--midnight")
+    result = _invoke(monkeypatch, fake, "balance", "Assets:Bank:Up")
     assert result.exit_code == 0, result.output
-    assert result.stdout == "200.00 AUD\n"
+    assert result.stdout == "2026-09-07 balance Assets:Bank:Up         200.00 AUD\n"
 
 
-def test_balance_midnight_equals_live_when_nothing_happened_today(monkeypatch):
+def test_balance_account_equals_live_when_nothing_happened_today(
+    monkeypatch, pinned_today
+):
     fake = FakeClient(["160.00", "160.00"], [[], []])
-    result = _invoke(monkeypatch, fake, "balance", "--midnight")
-    assert result.stdout == "160.00 AUD\n"
+    result = _invoke(monkeypatch, fake, "balance", "Assets:Bank:Up")
+    assert result.stdout == "2026-09-07 balance Assets:Bank:Up         160.00 AUD\n"
+
+
+def test_balance_long_account_name_keeps_a_separating_space(monkeypatch, pinned_today):
+    fake = FakeClient(["160.00", "160.00"], [[], []])
+    name = "Assets:Bank:Up:A-Very-Long-Account-Name"
+    result = _invoke(monkeypatch, fake, "balance", name)
+    assert result.stdout == f"2026-09-07 balance {name}     160.00 AUD\n"
 
 
 @pytest.mark.parametrize(
-    "args", [["balance", "Alice"], ["assertion", "Assets:Bank:Up"]]
+    "args",
+    [
+        ["balance", "Alice"],
+        ["balance", "--midnight"],
+        ["assertion", "Assets:Bank:Up"],
+    ],
 )
 def test_stale_invocations_fail_and_write_nothing_to_stdout(monkeypatch, args):
     # Callers used to run `upbank assertion ACCOUNT >> ledger`.
@@ -139,7 +153,7 @@ def test_balance_midnight_reports_unsettled_transactions_cleanly(
 ):
     a, b = [_txn(f"{pinned_today}T09:00:00+10:00", "-1.00")], []
     fake = FakeClient(["1.00"] * 4, [a, b, a, b, a, b])
-    result = _invoke(monkeypatch, fake, "balance", "--midnight")
+    result = _invoke(monkeypatch, fake, "balance", "Assets:Bank:Up")
     assert result.exit_code == 1
     assert "Error: Up transactions kept changing" in result.output
     assert "Traceback" not in result.output
@@ -259,7 +273,7 @@ def test_help_needs_no_usable_token(monkeypatch):
         result = _invoke(
             monkeypatch,
             PingClient(),
-            "recent",
+            "pull",
             "--help",
             env={"UPBANK_TOKEN": token, "OTHER": None},
         )
@@ -279,29 +293,27 @@ def test_accounts_lists_every_account(monkeypatch):
 
 def test_recent_defaults_to_the_first_account(monkeypatch):
     fake = TwoAccountClient()
-    result = _invoke(monkeypatch, fake, "recent", "30")
+    result = _invoke(monkeypatch, fake, "pull", "30")
     assert result.exit_code == 0, result.output
     assert fake.calls == [("recent", 30, "spend-1", None)]
 
 
 def test_up_account_selects_by_display_name_case_insensitively(monkeypatch):
     fake = TwoAccountClient()
-    result = _invoke(monkeypatch, fake, "--up-account", "holiday fund", "recent", "30")
+    result = _invoke(monkeypatch, fake, "--up-account", "holiday fund", "pull", "30")
     assert result.exit_code == 0, result.output
     assert fake.calls == [("recent", 30, "saver-1", None)]
 
 
 def test_up_account_can_come_from_the_environment_and_select_by_id(monkeypatch):
     fake = TwoAccountClient()
-    result = _invoke(
-        monkeypatch, fake, "recent", "30", env={"UPBANK_ACCOUNT": "saver-1"}
-    )
+    result = _invoke(monkeypatch, fake, "pull", "30", env={"UPBANK_ACCOUNT": "saver-1"})
     assert result.exit_code == 0, result.output
     assert fake.calls == [("recent", 30, "saver-1", None)]
 
 
 def test_unknown_up_account_is_a_clean_error(monkeypatch):
-    result = _invoke(monkeypatch, TwoAccountClient(), "--up-account", "nope", "recent")
+    result = _invoke(monkeypatch, TwoAccountClient(), "--up-account", "nope", "pull")
     assert result.exit_code == 1
     assert "No Up account matches 'nope'" in result.output
 

@@ -8,10 +8,11 @@
 - `upbank <command> --help` works without a usable token.
 - Requires click 8.2 or newer.
 - A token that can see no Up accounts is reported as an error, not a traceback.
-- **Breaking:** `upbank assertion` is gone; use `upbank balance --midnight`.
-  `upbank balance` takes no LABEL and prints only the amount, e.g.
-  `145.00 AUD`, so it no longer writes a `balance` directive: build one
-  yourself (see the README).
+- **Breaking:** `upbank assertion` is gone. `upbank balance` prints only the
+  live amount, e.g. `145.00 AUD`; `upbank balance ACCOUNT` takes a beancount
+  account name and prints a complete `balance` directive dated today (Sydney)
+  with today's transactions backed out, e.g.
+  `2026-11-06 balance Assets:Bank:Up          99.99 AUD`.
 
 ## 0.1.0
 

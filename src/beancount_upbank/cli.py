@@ -7,24 +7,28 @@ from dataclasses import dataclass
 from functools import cached_property
 
 import click
+from beancount.core import account as beancount_account
 from click.core import ParameterSource
 
+from . import reconcile_cli
 from .client import (
     HELD,
     UpbankClient,
     UpbankError,
+    consistent_snapshot,
     live_balance,
     start_of_day_assertion,
 )
+from .reconcile import ReconcileError, format_balance
 
 
 class _Group(click.Group):
-    """Report an UpbankError as a clean command-line error, not a traceback."""
+    """Report our own errors as clean command-line errors, not tracebacks."""
 
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except UpbankError as e:
+        except (UpbankError, ReconcileError) as e:
             raise click.ClickException(str(e)) from e
 
 
@@ -147,31 +151,79 @@ def accounts(session):
         )
 
 
+def _beancount_account(ctx, param, value):
+    if value is not None and not beancount_account.is_valid(value):
+        raise click.BadParameter(
+            f"{value!r} is not a beancount account name, e.g. Assets:Bank:Up."
+        )
+    return value
+
+
 @cli.command()
-@click.option(
-    "--midnight",
-    is_flag=True,
-    help="Balance as at midnight last night (Sydney time), excluding today's "
-    "transactions.",
-)
+@click.argument("account", required=False, callback=_beancount_account)
 @click.pass_obj
-def balance(session, midnight):
-    """Show the balance, now or at last midnight.
+def balance(session, account):
+    """Show the balance now, or a beancount balance directive for ACCOUNT.
 
-    Beancount checks a `balance` directive at the start of its date, while
-    Up's balance runs through the day. Stamping Up's current balance with
-    today's date fails whenever something was spent earlier today; stamping
-    it with tomorrow's fails when something is spent later today. So
-    --midnight backs today's transactions out instead, giving the balance the
-    ledger must show at midnight.
+    With no ACCOUNT, prints Up's balance right now, e.g. `145.00 AUD`.
 
-    That midnight is the start of today in Sydney, whatever your timezone.
+    With ACCOUNT, a beancount account name, prints a complete `balance`
+    directive dated today. Beancount checks a `balance` directive at the
+    start of its date, while Up's balance runs through the day, so today's
+    transactions are backed out, giving the balance the ledger must show at
+    midnight. That midnight is the start of today in Sydney, whatever your
+    timezone.
     """
-    if midnight:
-        _, amount = start_of_day_assertion(session.client, account=session.account)
-    else:
+    if account is None:
         _, amount = live_balance(session.client, session.account)
-    click.echo(f"{amount} AUD")
+        click.echo(f"{amount} AUD")
+        return
+    today, amount = start_of_day_assertion(session.client, account=session.account)
+    click.echo(format_balance(today, account, amount))
+
+
+@cli.command()
+@click.argument("account", callback=_beancount_account)
+@click.argument("ledger", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--pull",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Use this file saved by `upbank pull` instead of asking Up.",
+)
+@click.option("--dry-run", is_flag=True, help="Report the edits without making them.")
+@click.pass_obj
+def reconcile(session, account, ledger, pull, dry_run):
+    """Settle ACCOUNT's held (up_hold) entries in LEDGER.
+
+    LEDGER is your main ledger; the entries are edited in whichever included
+    file holds them. ACCOUNT is the beancount account the Up transactions post
+    to.
+
+    By default Up is asked now: the transactions back to the oldest hold,
+    and the balance, read together. Today's balance directive is written from
+    that balance (replacing one already dated today), and the edits are checked
+    against it.
+
+    With --pull FILE, a file saved by `upbank pull`, nothing is fetched and no
+    directive is written; the edits are checked against the newest balance
+    directive already in the ledger, so append today's (`upbank balance
+    ACCOUNT`) first.
+
+    If any balance assertion fails after the edits, every file is put back
+    exactly as it was.
+
+    The Up account is the first one Up lists. If your token sees several (a
+    saver, say), name the one ACCOUNT tracks before the command, or set
+    UPBANK_ACCOUNT:
+
+    \b
+        upbank --up-account NAME reconcile ACCOUNT LEDGER
+    """
+
+    def snapshot(since):
+        return consistent_snapshot(session.client, since=since, account=session.account)
+
+    reconcile_cli.run(account, ledger, pull, dry_run, snapshot)
 
 
 def _account_id(session):
@@ -196,10 +248,10 @@ def month(session, year, month):
 @cli.command()
 @click.argument("days", type=click.types.INT, default=60)
 @click.pass_obj
-def recent(session, days):
+def pull(session, days):
     """Download a sequence of transactions.
 
-    Only the account whose balance `balance` and `assertion` report, so a saver
+    Only the account whose balance `balance` reports, so a saver
     added later cannot leak into that account's ledger.
     """
     account_id, _ = live_balance(session.client, session.account)

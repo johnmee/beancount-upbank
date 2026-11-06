@@ -106,12 +106,12 @@ def test_date_is_none_when_no_transaction_belongs_to_the_account(tmp_path):
     assert UpbankImporter(account_id="someone-else").date(path) is None
 
 
-def test_flag_and_currency_are_configurable(importer):
+def test_flag_is_configurable_and_currency_is_aud(importer):
     test_file = os.path.join(os.path.dirname(__file__), "data/upbank.json")
 
     class Pending(UpbankImporter):
         FLAG = "!"
 
-    entries = Pending(currency="NZD").extract(test_file)
+    entries = Pending().extract(test_file)
     assert {e.flag for e in entries} == {"!"}
-    assert {e.postings[0].units.currency for e in entries} == {"NZD"}
+    assert {e.postings[0].units.currency for e in entries} == {"AUD"}

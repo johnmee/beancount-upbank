@@ -25,6 +25,10 @@ MAX_ATTEMPTS = 4
 # The longest we will wait because Up asked us to, however long it asks.
 MAX_RETRY_DELAY = 60
 
+# Up accounts are in AUD only: a foreign purchase is converted, and its
+# `amount` is the AUD that left the account.
+CURRENCY = "AUD"
+
 # Constants
 HELD = "HELD"
 SETTLED = "SETTLED"
@@ -324,23 +328,47 @@ def start_of_day_assertion(
     Raises:
         UpbankError: the transactions kept changing while the balance was read.
     """
+    today, opening, _ = consistent_snapshot(client, today=today, account=account)
+    return today, opening
+
+
+def consistent_snapshot(
+    client,
+    since: datetime.date | None = None,
+    today: datetime.date | None = None,
+    account: str | None = None,
+) -> tuple:
+    """Today's opening balance, and the transactions it was computed from.
+
+    Like `start_of_day_assertion`, but the transactions reach back to the start
+    of `since` (default: today) and are returned too, so a caller sees exactly
+    the state of Up that the balance reflects.
+
+    Returns:
+        (today, opening balance, transactions created since `since`)
+
+    Raises:
+        UpbankError: the transactions kept changing while the balance was read.
+    """
     if today is None:
         today = sydney_today()
-    since = datetime.datetime.combine(today, datetime.time(), tzinfo=UP_TZ)
+    if since is None:
+        since = today
+    start = datetime.datetime.combine(since, datetime.time(), tzinfo=UP_TZ)
     # The balance and the transactions are separate requests. Pulling the
     # transactions on both sides of the balance read, and retrying until the
     # two pulls agree, ensures nothing landed in between that the balance
     # includes but the subtraction misses (or vice versa).
     account_id, _ = live_balance(client, account)
     for _ in range(3):
-        pulled = client.transactions(since, account_id=account_id)
+        pulled = client.transactions(start, account_id=account_id)
         _, current = live_balance(client, account)
         if _fingerprint(
-            client.transactions(since, account_id=account_id)
+            client.transactions(start, account_id=account_id)
         ) == _fingerprint(pulled):
             break
     else:
         raise UpbankError(
             "Up transactions kept changing while the balance was read; try again."
         )
-    return today, start_of_day_balance(current, pulled, today)
+    return today, start_of_day_balance(current, pulled, today), pulled

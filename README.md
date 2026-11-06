@@ -1,15 +1,14 @@
 # beancount-upbank
 
-Import [Up](https://up.com.au/) (Australia) transactions into
+Import [Up Bank](https://up.com.au/) (Australia) transactions into
 [Beancount](https://beancount.github.io/).
 
 - `upbank` connects to the Up API and downloads your transactions as json.
 - `UpbankImporter` is a [beangulp](https://github.com/beancount/beangulp)
   importer that converts the json download into plain text Beancount entries.
-- `upbank balance --midnight` prints the balance a start-of-day `balance`
-  directive needs, with **pending** transactions included.
-- `upbank-reconcile` clears transactions that were **pending** when you
-  imported them, once Up settles or releases them.
+- `upbank reconcile` clears transactions that were **pending** when you
+  imported them, once Up settles or releases them, and writes today's
+  `balance` directive.
 
 This project is not affiliated with or endorsed by Up or Bendigo and Adelaide
 Bank. It reads your data with a personal access token you create yourself; it
@@ -17,25 +16,25 @@ cannot and does not move money.
 
 ## Install
 
+1. Install the library.
+
 ```
 pip install beancount-upbank
 ```
 
 Python 3.10 or newer, and Beancount 3.
 
-## Quick start
+2. Create your personal access token at <https://api.up.com.au/>. 
 
-1. Create a personal access token at <https://api.up.com.au/>, and put it in
-   your environment so it never appears on a command line:
+3. Save it to your shell environment:
 
    ```
    export UPBANK_TOKEN=up:yeah:...
    ```
 
-   Put it in your .profile. 
-   Or, use [direnv](https://direnv.net/) for automagically loading, and unloading, environment variables per directory.
+   Perhaps add it in your .profile, or use [direnv](https://direnv.net/).
 
-   Test your token by pinging the upbank API:
+4. Test your token by pinging the upbank API:
 
    ```
    ❯  upbank ping
@@ -43,15 +42,7 @@ Python 3.10 or newer, and Beancount 3.
    {"meta":{"id":"123456abcd-8888-8888-8888-789efgh","statusEmoji":"⚡️"}}
    ```
 
-2. Download recent transactions:
-
-   Download the last 30 days of UP transactions and save them at `/tmp/up.json`:
-
-   ```
-   upbank recent 30 > /tmp/up.json
-   ```
-
-3. Create an importer script, `import.py`:
+5. Create the importer script by saving this to file `up-import.py` with the name of your bank account.
 
    ```python
    from beangulp import Ingest
@@ -60,25 +51,169 @@ Python 3.10 or newer, and Beancount 3.
    Ingest([UpbankImporter("Assets:Bank:Up")])()
    ```
 
-4. Convert the downloaded json transactions to Beancount. `-e` points at your ledger so
-   that transactions you already have can be identified as duplicates:
+## Usage
+
+1. Download recent transactions:
 
    ```
-   python import.py extract -e main.beancount /tmp/up.json > /tmp/up.beancount
+   upbank pull
+   ```
+   Outputs the last 60 days of UP transactions in their json format.
+
+   ```
+   upbank pull 7 > /tmp/up.json
+   ```
+   Saves the last 7 days of json UP transactions to the file.
+
+2. Run the beangulp importer:
+
+   ```
+   python up-import.py extract -e main.beancount --pull /tmp/up.json > /tmp/up.beancount
    ```
 
-   Each entry has one posting, to the Up account. Add the other side yourself,
-   or let [`beancount-fuzzyfill`](https://github.com/johnmee/beancount-fuzzyfill)
-   guess it from your past transactions.
+   `-e` points to your ledger so it can avoid duplicating transactions.
 
-## The importer
+   Each entry generates one posting, to the Up account.  You complete the other half of the transaction manually.
+
+   Or, I use [`beancount-predict-postings`](https://github.com/johnmee/beancount-predict-postings)
+   to fill the cross-postings based on my previous transactions, then review them manually.
+
+3. Reconcile the held transactions and assert the balance
+
+   ```
+   upbank reconcile Assets:Bank:Up main.beancount
+   ```
+   Settles the on-hold Up transactions and adds a balance directive.
+
+   - `Assets:Bank:Up`: the beancount account the Up transactions post to.
+   - `main.beancount`: your main ledger. Any files it `include`s are covered
+     too: each edit lands in whichever file holds the entry.
+
+   It asks Up for the current balance and for transactions back to the oldest
+   held entry. It then settles the held entries (see below), writes today's 
+   `balance` directive, and checks that every existing `balance` directive 
+   still holds. If one doesn't, it puts every file back exactly as it was and 
+   exits non-zero.
+
+   Today's directive goes at the end of the file holding the account's newest
+   transaction or `balance` directive, so it follows your import into a new
+   year's file. Transfers recorded in another account's file don't count. Run
+   it twice in a day and today's directive is replaced, not duplicated.
+
+   Add `--dry-run` to see what it would change without changing anything:
+
+   ```
+   upbank reconcile Assets:Bank:Up main.beancount --dry-run
+   ```
+
+   To work from the download in step 1 instead of asking Up again, pass it
+   with `--pull`. Nothing is fetched and no directive is written, so append
+   today's first, with `upbank balance`, which prints the directive dated
+   today with the balance at the start of today (midnight, Sydney time):
+
+   ```
+   upbank balance Assets:Bank:Up >> up-2026.beancount
+   upbank reconcile Assets:Bank:Up main.beancount --pull /tmp/up.json
+   ```
+
+   Without an account, `upbank balance` prints the available balance right
+   now, e.g. `359.26 AUD`.
+
+   **Why: the `up_hold` metadata**
+
+   Up handles a card payment in two phases. First the money is *held*:
+   deducted from your available balance, but not final. Days or weeks later
+   the transaction *settles*, possibly at a different amount (a restaurant
+   tip, a foreign currency conversion). Or the hold is *released*: the money
+   comes back and the transaction disappears from the API without a trace.
+
+   Up's balance is the available balance, with holds already deducted, so
+   held transactions have to be in your ledger for its `balance` directives to
+   pass. The importer writes them, and marks each one with Up's transaction
+   id:
+
+   ```
+   2026-11-05 * "Coles" "COLES 0123, SYDNEY"
+     up_hold: "c55555-5555-5555-5555-26c18559c321"
+     Assets:Bank:Up  -22.95 AUD
+   ```
+
+   `up_hold` means "provisional": this amount may still change or vanish.
+   The importer only ever appends, so it cannot fix the entry later.
+   `upbank reconcile` finds each marked entry at Up and finishes it off: it
+   removes the `up_hold` line, corrects the amount, or comments the entry
+   out, editing it in place so your own postings and comments survive. A
+   fully settled ledger has no `up_hold` lines left.
+
+   **Reading the output**
+
+   ```
+     2026-10-29  Coles                              -32.72 AUD   settled as held
+     2026-10-30  Example Brewing Co.                -30.00 -> -31.25 AUD   settled 2026-11-01
+     2026-10-31  Hotel Example                      -200.00 AUD   released, never settled
+
+   2 still unsettled:
+      2026-11-05  Silo West                          -5.90 AUD  0d
+      2026-11-05  Coles                              -22.95 AUD  0d
+
+     up-2026.beancount:214: balance directive -> 968.75 AUD (that snapshot included the hold)
+     up-2026.beancount: append  2026-11-06 balance Assets:Bank:Up         308.18 AUD
+
+   Applied. Verified against Up's balance (308.18 AUD).
+   ```
+
+   Nothing to worry about:
+
+   - `settled as held`: the amount was right; the `up_hold` line is removed.
+   - `-30.00 -> -31.25 AUD settled ...`: it settled at a different amount;
+     the posting is corrected. Check the other posting if you split it.
+   - `released, never settled`: the hold was cancelled; the entry is
+     commented out.
+   - `FILE:LINE: balance directive -> ...`: an earlier `balance` directive
+     was taken while that hold was deducted, so it moves by the same amount.
+   - `N still unsettled` with a small age (`0d`, `2d`): normal. They stay
+     marked, and the next run picks them up.
+   - `FILE: append ...` or `FILE:LINE: replace with ...`: today's `balance`
+     directive.
+   - `N line edit(s) pending; re-run without --dry-run.`: nothing was changed.
+   - `Applied. Verified against ...`: done, and the ledger balances.
+   - `No provisional (up_hold) entries in the ledger.`: nothing to do (only
+     with a download file; otherwise today's directive is still written).
+   - `Nothing to change.`: the ledger already matches Up.
+
+   Lines marked `!!` need you:
+
+   - `-- unusually old, Up may have dropped it`: Up has reported it held for
+     more than a week. Check it in the Up app.
+   - `-- older than the pull window, cannot be checked`: only with a download
+     file. The hold is older than the download, so its absence proves
+     nothing. Run without the file, or pull more days (`upbank pull 90`).
+   - `transfer between own accounts -- not touched, fix by hand`: the entry
+     also posts to another of your `Assets` or `Liabilities` accounts, whose
+     balances this run does not adjust. Edit both sides yourself.
+   - `Up reports X AUD ..., but the ledger accumulates Y AUD -- a gap`:
+     followed by either the holds that exactly account for the gap (Up has
+     released them; comment them out and adjust the `balance` directives
+     between), or `No combination of pending holds accounts for it`: the gap
+     is something else, such as a missing or mistyped transaction.
+   - `Error: Rolled back -- these balance assertions do not hold`: every file
+     was left exactly as it was. Fix the assertions listed, usually with the
+     help of the gap message above it, and run again.
+   - `Error: main.beancount never opens Assets:Bank:Up`: you named an
+     included file, or misspelt the account. Name the main ledger.
+   - `Error: ... has 2 balance directives dated ...`: delete all but one of
+     the lines listed and run again.
+
+   See [Pending transactions and `upbank reconcile`](#pending-transactions-and-upbank-reconcile)
+   for the full rules.
+
+## importer customisation
 
 ```python
 UpbankImporter(
-    "Assets:Bank:Up",
-    tags=...,  # a set of tags applied to every transaction
-    account_id=None,  # Up's id for the account; see "More than one account"
-    currency="AUD",
+    "Assets:Bank:Up",   # The beancount name for your UP account
+    account_id=None,    # Up's id for the account; see "More than one account"
+    tags=...,           # a set of tags to apply to every transaction
 )
 ```
 
@@ -108,42 +243,18 @@ Options:
 
 Commands:
   accounts    List the token's Up accounts: id, type, name and balance.
-  balance     Show the balance, now or at last midnight.
+  balance     Show the balance now, or a beancount balance directive for...
   categories  Get a list of transaction categories.
   held        Download held transactions.
   month       Download a sequence of transactions.
   ping        Send a ping to Upbank, to verify your token and their API...
-  recent      Download a sequence of transactions.
+  pull        Download a sequence of transactions.
+  reconcile   Settle ACCOUNT's held (up_hold) entries in LEDGER.
 ```
 
 Requests to Up time out after 30 seconds. A rate limit (HTTP 429, honouring
 `Retry-After`), a server error or a failure to connect is retried up to four
 times, backing off between tries, before it is reported as an error.
-
-### Balance assertions
-
-Beancount checks a `balance` directive at the **start** of its date, but Up
-reports the balance **now**, which already includes everything spent today.
-Stamping Up's figure with today's date fails whenever something was spent
-earlier today; stamping it with tomorrow's fails when something is spent later.
-`upbank balance --midnight` backs today's transactions out, giving the balance
-your ledger must show at midnight (Sydney time):
-
-```
-$ upbank balance --midnight
-200.00 AUD
-```
-
-It prints only the amount, so compose the directive yourself, with the date
-pinned to Sydney:
-
-```
-$ amount=$(upbank balance --midnight) &&
-  echo "$(TZ=Australia/Sydney date +%F) balance Assets:Bank:Up $amount" >> up-2026.beancount
-```
-
-The `&&` matters: if `upbank` fails, nothing is appended, rather than a
-`balance` line with no amount.
 
 ### More than one account
 
@@ -166,8 +277,8 @@ that variable. The secret itself still never appears on the command line:
 export UPBANK_TOKEN_A=up:yeah:...
 export UPBANK_TOKEN_B=up:yeah:...
 
-upbank --token env:UPBANK_TOKEN_B recent 30
-UPBANK_TOKEN=env:UPBANK_TOKEN_B upbank recent 30    # same thing
+upbank --token env:UPBANK_TOKEN_B pull 30
+UPBANK_TOKEN=env:UPBANK_TOKEN_B upbank pull 30    # same thing
 ```
 
 Only one level is followed: a variable named by `env:` must hold the token
@@ -175,83 +286,22 @@ itself. Up tokens start with `up:`; `upbank` warns (without printing the value)
 when a token does not, which usually means a variable name was passed without
 `env:`.
 
-## Pending transactions and `upbank-reconcile`
+## Pending transactions and `upbank reconcile`
 
-Up's balance is the *available* balance: money on hold is already deducted. So a
-pending (`HELD`) transaction has to be in your ledger for your `balance`
-directive to reconcile, and the importer writes it with an `up_hold` metadata
-line to mark it provisional:
+`upbank reconcile` looks up each `up_hold` entry at Up and finishes it off:
 
-```
-2026-09-01 * "Example Brewing Co." "EXAMPLE BREW, SYDNEY"
-  up_hold: "0c2b1d6e-..."
-  Assets:Bank:Up  -30.00 AUD
-```
-
-Such an entry is not final. Up may settle it at a **different** amount (a
-restaurant tip, a foreign currency conversion), or release it entirely, in which
-case it simply disappears from the API: `TransactionStatusEnum` is
-`HELD|SETTLED` with no "released" state and no tombstone. The importer only
-appends, so it cannot see either outcome.
-
-`upbank-reconcile` looks up each marked entry in a fresh download and finishes
-it off:
-
-| in the download | action |
+| at Up | action |
 |---|---|
 | settled, same amount | remove the `up_hold` line |
 | settled, different amount | correct the amount, remove the `up_hold` line |
 | absent | comment the entry out; the hold was released |
 | still `HELD` | leave it and report it, loudly once it is over a week old |
-| outside the download's window | leave it and report it; absence proves nothing |
+| older than the download (file only) | leave it and report it; absence proves nothing |
 
-Entries are edited **in place**, so hand-written `;` annotations, narration and
-position survive. Correcting one also shifts every `balance` directive that was
-snapshotted while the hold was live.
-
-```
-$ upbank-reconcile up-2026.beancount /tmp/up.json --account Assets:Bank:Up --fix
-  2026-09-01  Example Brewing Co.   -30.00 -> -31.25 AUD   settled 2026-09-03
-
-  balance directive line 14 -> 968.75 AUD (that snapshot included the hold)
-
-Applied. Verified against the untouched 2026-09-06 assertion (968.75 AUD).
-```
-
-Run it **last**, after you have appended this run's `balance --midnight`
-assertion. That assertion is the only one known to postdate a release, so it is
-the evidence the run checks itself against. If any assertion fails afterwards, a
-`--fix` run puts the ledger back exactly as it found it and exits non-zero; no
-backup file is written. Without `--fix` it only reports.
-
-```
-Usage: upbank-reconcile [OPTIONS] LEDGER PULL
-
-  Promote settled holds in LEDGER using a fresh Up PULL (json).
-
-Options:
-  --account TEXT     Beancount account the Up transactions post to.
-                     [required]
-  --root FILE        Top-level ledger to load for balance semantics. Defaults
-                     to LEDGER, which is right when your ledger is one file.
-                     If LEDGER is `include`d by a main ledger, name that here:
-                     a sub-ledger loaded on its own has no opening balance, so
-                     every assertion in it would appear to fail.
-  --fix / --dry-run  Apply the edits. The default only reports them.
-  --help             Show this message and exit.
-```
-
-Two cases are reported but never edited, because neither can be settled safely
-from one account's file:
-
-- **A leg of a transfer between your own accounts.** The other leg moves with
-  it, and its balance directives live in a file this run does not hold. Any
-  entry that also posts to another `Assets` or `Liabilities` account is treated
-  as a transfer, which errs towards leaving it for you.
-- **A hold older than the download's window.** It was never fetched, so its
-  absence means nothing. The run instead checks whether the gap between Up's
-  balance and your ledger's matches the held amount exactly, which is the only
-  evidence left once the API has forgotten the hold.
+Up keeps no record of a release: `TransactionStatusEnum` is `HELD|SETTLED`,
+with no "released" state and no tombstone. Absence is therefore only a
+hypothesis, and the run proves it by checking afterwards that every `balance`
+directive for the account holds.
 
 ## Use from Python
 
