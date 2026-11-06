@@ -191,18 +191,22 @@ Python 3.10 or newer, and Beancount 3.
    - `transfer between own accounts -- not touched, fix by hand`: the entry
      also posts to another of your `Assets` or `Liabilities` accounts, whose
      balances this run does not adjust. Edit both sides yourself.
+   - `no balance directive after ... can confirm the release, so it is left
+     alone`: only with a download file. The hold looks released, but no later
+     balance directive would catch it if it were not. Append one with
+     `upbank balance ACCOUNT >> FILE` and run again.
    - `Up reports X AUD ..., but the ledger accumulates Y AUD -- a gap`:
      followed by either the holds that exactly account for the gap (Up has
      released them; comment them out and adjust the `balance` directives
      between), or `No combination of pending holds accounts for it`: the gap
      is something else, such as a missing or mistyped transaction.
-   - `Error: Rolled back -- these balance assertions do not hold`: every file
-     was left exactly as it was. Fix the assertions listed, usually with the
-     help of the gap message above it, and run again.
+   - `Error: Rolled back -- these balance directives do not hold`: every file
+     was left exactly as it was. Fix the balance directives listed, usually
+     with the help of the gap message above it, and run again.
    - `Error: main.beancount never opens Assets:Bank:Up`: you named an
      included file, or misspelt the account. Name the main ledger.
-   - `Error: ... has 2 balance directives dated ...`: delete all but one of
-     the lines listed and run again.
+   - `Error: ... has 2 balance directives dated ...` or `... in more than one
+     file`: delete all but one of the lines listed and run again.
 
    See [Pending transactions and `upbank reconcile`](#pending-transactions-and-upbank-reconcile)
    for the full rules.
@@ -321,6 +325,7 @@ Failures raise `beancount_upbank.UpbankError`.
 uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
+uv run mypy
 ```
 
 The tests never reach the network.

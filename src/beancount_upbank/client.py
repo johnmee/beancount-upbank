@@ -6,9 +6,28 @@ Use the Up Bank API to retrieve transactions.
 import datetime
 import time
 from decimal import Decimal
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 import requests
+
+# One JSON:API resource from Up (a transaction, an account, a category), as
+# decoded from its JSON: ``{"type": ..., "id": ..., "attributes": {...}, ...}``.
+Resource = dict[str, Any]
+
+# Query parameters for a request to Up.
+Params = dict[str, str | int]
+
+
+class UpReader(Protocol):
+    """What reading a balance needs from Up: an ``UpbankClient``, or a stand-in."""
+
+    def accounts(self) -> list[Resource]: ...
+
+    def transactions(
+        self, since: datetime.datetime, *, account_id: str | None = None
+    ) -> list[Resource]: ...
+
 
 URL = "https://api.up.com.au/api/v1"
 
@@ -29,7 +48,8 @@ MAX_RETRY_DELAY = 60
 # `amount` is the AUD that left the account.
 CURRENCY = "AUD"
 
-# Constants
+# Up's TransactionStatusEnum. There is no terminal "released" state: a hold that
+# is cancelled rather than settled simply disappears from the API.
 HELD = "HELD"
 SETTLED = "SETTLED"
 
@@ -52,13 +72,16 @@ class UpbankError(Exception):
 
 
 class UpbankClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str) -> None:
         """
-        token: str: upbank "personal access token" from https://api.up.com.au/getting_started
+        token: Up's "personal access token", from
+            https://api.up.com.au/getting_started
         """
         self.token = token
 
-    def get_month(self, year: int, month: int, account_id: str | None = None) -> []:
+    def get_month(
+        self, year: int, month: int, account_id: str | None = None
+    ) -> list[Resource]:
         """Get the transactions created in the given month.
 
         The month is a calendar month in Up's time, the same time the importer
@@ -77,8 +100,13 @@ class UpbankClient:
 
     def get_recent(
         self, days: int, account_id: str | None = None, status: str | None = None
-    ) -> []:
+    ) -> list[Resource]:
         """Get all recent transactions.
+
+        The pull starts at midnight in Up's time, ``days`` days ago, so its
+        first day is whole. ``upbank reconcile --pull`` relies on that: it
+        treats every day from the pull's earliest transaction on as fully
+        fetched, so a hold missing from one of those days was released.
 
         days: int: commencing this many days ago
         account_id: str: only this account's; or None for every account.
@@ -87,8 +115,8 @@ class UpbankClient:
         Returns:
               A list of transactions as a dict.
         """
-        now = datetime.datetime.now(datetime.timezone.utc)
-        since = now - datetime.timedelta(days=days)
+        first = sydney_today() - datetime.timedelta(days=days)
+        since = datetime.datetime.combine(first, datetime.time(), tzinfo=UP_TZ)
         return self.transactions(since, status=status, account_id=account_id)
 
     def transactions(
@@ -97,7 +125,7 @@ class UpbankClient:
         until: datetime.datetime | None = None,
         status: str | None = None,
         account_id: str | None = None,
-    ) -> list:
+    ) -> list[Resource]:
         """Fetch a list of transactions.
 
         Args:
@@ -122,7 +150,7 @@ class UpbankClient:
 
         # Upbank only returns PAGE_SIZE transactions per request; `get` follows
         # the links to the rest.
-        params = {"page[size]": PAGE_SIZE, "filter[since]": since.isoformat()}
+        params: Params = {"page[size]": PAGE_SIZE, "filter[since]": since.isoformat()}
         if until is not None:
             params["filter[until]"] = until.isoformat()
         if status is not None:
@@ -135,7 +163,7 @@ class UpbankClient:
         response = self.get(path, params=params)
         return response
 
-    def get(self, path, params: dict | None = None) -> list:
+    def get(self, path: str, params: Params | None = None) -> list[Resource]:
         """Send a GET request to Up.
 
         Args:
@@ -149,10 +177,10 @@ class UpbankClient:
             UpbankError: Up answered with an error instead of data, or could not
                 be reached.
         """
-        result = []
-        uri = f"{URL}{path}"
+        result: list[Resource] = []
+        uri: str | None = f"{URL}{path}"
         while uri is not None:
-            response = self._send(uri, params)
+            response = self._get_with_retry(uri, params)
             # Up's `next` link already carries the whole query, so the
             # parameters are for the first page only.
             params = None
@@ -187,7 +215,7 @@ class UpbankClient:
                 break
         return result
 
-    def _send(self, uri, params):
+    def _get_with_retry(self, uri: str, params: Params | None) -> requests.Response:
         """GET once, trying again when Up is limiting us, failing or unreachable.
 
         Returns the final response, which may still be an error: the caller
@@ -208,8 +236,9 @@ class UpbankClient:
                     return response
                 delay = _retry_after(response) or _backoff(attempt)
             time.sleep(delay)
+        raise AssertionError("unreachable: the last attempt returns or raises")
 
-    def ping(self):
+    def ping(self) -> requests.Response:
         """Verify the access token is working.
 
         Returns:
@@ -225,24 +254,25 @@ class UpbankClient:
         except requests.RequestException as e:
             raise UpbankError(f"Could not reach Up: {e}") from e
 
-    def accounts(self):
+    def accounts(self) -> list[Resource]:
         """Fetch a list of accounts."""
         return self.get("/accounts")
 
-    def categories(self):
+    def categories(self) -> list[Resource]:
         """Fetch a list of categories."""
         return self.get("/categories")
 
-    def _headers(self):
+    def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
 
 
 def _backoff(attempt: int) -> int:
     """Seconds to wait after a failed attempt: 1, 2, 4, ..."""
-    return 2 ** (attempt - 1)
+    # int ** int is typed Any: a negative exponent would give a float.
+    return int(2 ** (attempt - 1))
 
 
-def _retry_after(response) -> int | None:
+def _retry_after(response: requests.Response) -> int | None:
     """How long Up asked us to wait, in whole seconds; None if it did not say."""
     try:
         seconds = int(response.headers.get("Retry-After", ""))
@@ -251,8 +281,8 @@ def _retry_after(response) -> int | None:
     return min(max(seconds, 0), MAX_RETRY_DELAY)
 
 
-def start_of_day_balance(
-    balance: Decimal, transactions: list, day: datetime.date
+def opening_balance_from(
+    balance: Decimal, transactions: list[Resource], day: datetime.date
 ) -> Decimal:
     """Back `day`'s transactions out of a balance read during `day`.
 
@@ -275,7 +305,7 @@ def start_of_day_balance(
     return balance - moved
 
 
-def select_account(accounts: list, selector: str | None = None) -> dict:
+def select_account(accounts: list[Resource], selector: str | None = None) -> Resource:
     """Pick one of the token's Up accounts.
 
     Args:
@@ -300,20 +330,24 @@ def select_account(accounts: list, selector: str | None = None) -> dict:
     )
 
 
-def live_balance(client, selector: str | None = None) -> tuple:
+def live_balance(client: UpReader, selector: str | None = None) -> tuple[str, Decimal]:
     """The account's id and its balance right now, as the Up app shows it."""
     acct = select_account(client.accounts(), selector)
     return acct["id"], Decimal(acct["attributes"]["balance"]["value"])
 
 
-def _fingerprint(transactions: list) -> set:
+def _fingerprint(transactions: list[Resource]) -> set[tuple[str, str]]:
+    """Each transaction's id and amount, to tell whether two pulls are the same."""
     return {(t["id"], t["attributes"]["amount"]["value"]) for t in transactions}
 
 
-def start_of_day_assertion(
-    client, today: datetime.date | None = None, account: str | None = None
-) -> tuple:
-    """The balance the ledger must show at the start of today.
+def opening_balance_and_transactions(
+    client: UpReader,
+    since: datetime.date | None = None,
+    today: datetime.date | None = None,
+    account: str | None = None,
+) -> tuple[datetime.date, Decimal, list[Resource]]:
+    """Today's opening balance, and the transactions it was computed from.
 
     Beancount checks a `balance` directive at the start of its date, while
     Up's balance runs through the day. Stamping Up's current balance with
@@ -322,27 +356,9 @@ def start_of_day_assertion(
     transactions are backed out instead, giving the balance the ledger must
     show at midnight.
 
-    Returns:
-        (today, opening balance)
-
-    Raises:
-        UpbankError: the transactions kept changing while the balance was read.
-    """
-    today, opening, _ = consistent_snapshot(client, today=today, account=account)
-    return today, opening
-
-
-def consistent_snapshot(
-    client,
-    since: datetime.date | None = None,
-    today: datetime.date | None = None,
-    account: str | None = None,
-) -> tuple:
-    """Today's opening balance, and the transactions it was computed from.
-
-    Like `start_of_day_assertion`, but the transactions reach back to the start
-    of `since` (default: today) and are returned too, so a caller sees exactly
-    the state of Up that the balance reflects.
+    The transactions reach back to the start of `since` (default: today) and
+    are returned too, so a caller sees exactly the state of Up that the
+    balance reflects.
 
     Returns:
         (today, opening balance, transactions created since `since`)
@@ -350,25 +366,27 @@ def consistent_snapshot(
     Raises:
         UpbankError: the transactions kept changing while the balance was read.
     """
-    if today is None:
-        today = sydney_today()
-    if since is None:
-        since = today
-    start = datetime.datetime.combine(since, datetime.time(), tzinfo=UP_TZ)
-    # The balance and the transactions are separate requests. Pulling the
-    # transactions on both sides of the balance read, and retrying until the
-    # two pulls agree, ensures nothing landed in between that the balance
-    # includes but the subtraction misses (or vice versa).
+
+    def day() -> datetime.date:
+        return today if today is not None else sydney_today()
+
+    first = since if since is not None else day()
+    start = datetime.datetime.combine(first, datetime.time(), tzinfo=UP_TZ)
+    # Balance and transactions are separate requests, so pull the transactions
+    # either side of the balance and retry until the two pulls agree: nothing
+    # then changed in the seconds between, and the balance matches the pull.
+    # The date is read either side of the balance too, so a read that
+    # straddles midnight is retried rather than dated the wrong day.
     account_id, _ = live_balance(client, account)
+    before = client.transactions(start, account_id=account_id)
     for _ in range(3):
-        pulled = client.transactions(start, account_id=account_id)
+        on = day()
         _, current = live_balance(client, account)
-        if _fingerprint(
-            client.transactions(start, account_id=account_id)
-        ) == _fingerprint(pulled):
-            break
-    else:
-        raise UpbankError(
-            "Up transactions kept changing while the balance was read; try again."
-        )
-    return today, start_of_day_balance(current, pulled, today), pulled
+        after = client.transactions(start, account_id=account_id)
+        if day() == on and _fingerprint(after) == _fingerprint(before):
+            return on, opening_balance_from(current, after, on), after
+        # This pull is fresh, so it is the next attempt's "before".
+        before = after
+    raise UpbankError(
+        "Up transactions kept changing while the balance was read; try again."
+    )

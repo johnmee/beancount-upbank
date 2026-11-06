@@ -40,6 +40,7 @@ upbank = "beancount_upbank.cli:cli"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.1",
     "pytest>=8",
     "ruff>=0.17.3",
 ]
@@ -49,6 +50,34 @@ packages = ["src/beancount_upbank"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+files = ["src", "tests"]
+strict = true
+
+[[tool.mypy.overrides]]
+# The tests are type-checked, but need not be annotated.
+module = [
+    "conftest",
+    "test_cli",
+    "test_client",
+    "test_dedup",
+    "test_importer",
+    "test_reconcile",
+]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+# beangulp ships no type information.
+module = ["beangulp", "beangulp.*"]
+ignore_missing_imports = true
+
+[tool.ruff.format]
+# Ruff formats Markdown code blocks too, and would collapse the README's
+# column-aligned comments.
+exclude = ["README.md"]
 
 [tool.ruff.lint]
 # On top of Ruff's defaults: import sorting, and bugbear's likely-bug checks.

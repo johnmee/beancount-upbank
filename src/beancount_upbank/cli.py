@@ -1,10 +1,13 @@
 """The ``upbank`` command line."""
 
+import datetime
 import json
 import os
 import pprint
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import cached_property
+from typing import Any
 
 import click
 from beancount.core import account as beancount_account
@@ -13,11 +16,11 @@ from click.core import ParameterSource
 from . import reconcile_cli
 from .client import (
     HELD,
+    Resource,
     UpbankClient,
     UpbankError,
-    consistent_snapshot,
     live_balance,
-    start_of_day_assertion,
+    opening_balance_and_transactions,
 )
 from .reconcile import ReconcileError, format_balance
 
@@ -25,7 +28,7 @@ from .reconcile import ReconcileError, format_balance
 class _Group(click.Group):
     """Report our own errors as clean command-line errors, not tracebacks."""
 
-    def invoke(self, ctx):
+    def invoke(self, ctx: click.Context) -> Any:
         try:
             return super().invoke(ctx)
         except (UpbankError, ReconcileError) as e:
@@ -37,7 +40,7 @@ UP_PREFIX = "up:"
 
 
 def _resolve_token(value: str, origin: str) -> str:
-    """Return the token, following a single ``env:NAME`` reference.
+    """Return the UP token, following a single ``env:NAME`` reference.
 
     ``origin`` says where ``value`` came from (``--token`` or ``UPBANK_TOKEN``)
     so a warning can suggest the right fix. Warns, without echoing the secret,
@@ -117,7 +120,7 @@ class _Session:
     "account at Up; it is not a beancount account name.",
 )
 @click.pass_context
-def cli(ctx, token, up_account):
+def cli(ctx: click.Context, token: str | None, up_account: str | None) -> None:
     source = ctx.get_parameter_source("token")
     origin = "UPBANK_TOKEN" if source == ParameterSource.ENVIRONMENT else "--token"
     ctx.obj = _Session(token, origin, up_account)
@@ -125,7 +128,7 @@ def cli(ctx, token, up_account):
 
 @cli.command()
 @click.pass_obj
-def ping(session):
+def ping(session: _Session) -> None:
     """Send a ping to Upbank, to verify your token and their API status."""
     response = session.client.ping()
     click.echo("Ping!")
@@ -134,14 +137,14 @@ def ping(session):
 
 @cli.command()
 @click.pass_obj
-def categories(session):
+def categories(session: _Session) -> None:
     """Get a list of transaction categories."""
     click.echo(pprint.pformat(session.client.categories()))
 
 
 @cli.command()
 @click.pass_obj
-def accounts(session):
+def accounts(session: _Session) -> None:
     """List the token's Up accounts: id, type, name and balance."""
     for acct in session.client.accounts():
         attributes = acct["attributes"]
@@ -151,7 +154,9 @@ def accounts(session):
         )
 
 
-def _beancount_account(ctx, param, value):
+def _beancount_account(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
     if value is not None and not beancount_account.is_valid(value):
         raise click.BadParameter(
             f"{value!r} is not a beancount account name, e.g. Assets:Bank:Up."
@@ -162,7 +167,7 @@ def _beancount_account(ctx, param, value):
 @cli.command()
 @click.argument("account", required=False, callback=_beancount_account)
 @click.pass_obj
-def balance(session, account):
+def balance(session: _Session, account: str | None) -> None:
     """Show the balance now, or a beancount balance directive for ACCOUNT.
 
     With no ACCOUNT, prints Up's balance right now, e.g. `145.00 AUD`.
@@ -178,7 +183,9 @@ def balance(session, account):
         _, amount = live_balance(session.client, session.account)
         click.echo(f"{amount} AUD")
         return
-    today, amount = start_of_day_assertion(session.client, account=session.account)
+    today, amount, _ = opening_balance_and_transactions(
+        session.client, account=session.account
+    )
     click.echo(format_balance(today, account, amount))
 
 
@@ -192,7 +199,9 @@ def balance(session, account):
 )
 @click.option("--dry-run", is_flag=True, help="Report the edits without making them.")
 @click.pass_obj
-def reconcile(session, account, ledger, pull, dry_run):
+def reconcile(
+    session: _Session, account: str, ledger: str, pull: str | None, dry_run: bool
+) -> None:
     """Settle ACCOUNT's held (up_hold) entries in LEDGER.
 
     LEDGER is your main ledger; the entries are edited in whichever included
@@ -209,7 +218,7 @@ def reconcile(session, account, ledger, pull, dry_run):
     directive already in the ledger, so append today's (`upbank balance
     ACCOUNT`) first.
 
-    If any balance assertion fails after the edits, every file is put back
+    If any balance directive fails after the edits, every file is put back
     exactly as it was.
 
     The Up account is the first one Up lists. If your token sees several (a
@@ -220,13 +229,17 @@ def reconcile(session, account, ledger, pull, dry_run):
         upbank --up-account NAME reconcile ACCOUNT LEDGER
     """
 
-    def snapshot(since):
-        return consistent_snapshot(session.client, since=since, account=session.account)
+    def snapshot(
+        since: datetime.date,
+    ) -> tuple[datetime.date, Decimal, list[Resource]]:
+        return opening_balance_and_transactions(
+            session.client, since=since, account=session.account
+        )
 
     reconcile_cli.run(account, ledger, pull, dry_run, snapshot)
 
 
-def _account_id(session):
+def _account_id(session: _Session) -> str | None:
     """The id of the selected Up account; or None if none was selected."""
     if session.account is None:
         return None
@@ -237,7 +250,7 @@ def _account_id(session):
 @click.argument("year", type=click.types.INT)
 @click.argument("month", type=click.types.INT)
 @click.pass_obj
-def month(session, year, month):
+def month(session: _Session, year: int, month: int) -> None:
     """Download a sequence of transactions."""
     transactions = session.client.get_month(
         year, month, account_id=_account_id(session)
@@ -248,7 +261,7 @@ def month(session, year, month):
 @cli.command()
 @click.argument("days", type=click.types.INT, default=60)
 @click.pass_obj
-def pull(session, days):
+def pull(session: _Session, days: int) -> None:
     """Download a sequence of transactions.
 
     Only the account whose balance `balance` reports, so a saver
@@ -262,7 +275,7 @@ def pull(session, days):
 @cli.command()
 @click.argument("days", type=click.types.INT, default=60)
 @click.pass_obj
-def held(session, days):
+def held(session: _Session, days: int) -> None:
     """Download held transactions."""
     transactions = session.client.get_recent(
         days, account_id=_account_id(session), status=HELD

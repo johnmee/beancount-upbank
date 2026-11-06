@@ -12,12 +12,14 @@ applied by ``beangulp.extract.mark_duplicate_entries`` before ``cmp`` is called,
 so it is not checked here.
 """
 
+from decimal import Decimal
+
 from beancount.core import data
 
 from .markers import HOLD_KEY, ID_KEY
 
 
-def _up_id(entry):
+def _up_id(entry: data.Transaction) -> str | None:
     """Return the Up transaction id for an entry, or None.
 
     ``ID_KEY`` is set by the importer on every extracted entry and is invisible
@@ -27,7 +29,9 @@ def _up_id(entry):
     return entry.meta.get(ID_KEY) or entry.meta.get(HOLD_KEY)
 
 
-def _amounts_by_account(entry):
+def _amounts_by_account(
+    entry: data.Transaction,
+) -> dict[tuple[str, str], Decimal | None]:
     """Map (account, currency) -> number for each posting carrying an amount."""
     return {
         (posting.account, posting.units.currency): posting.units.number
@@ -36,7 +40,7 @@ def _amounts_by_account(entry):
     }
 
 
-def exact_amount_comparator(entry1, entry2):
+def exact_amount_comparator(entry1: data.Directive, entry2: data.Directive) -> bool:
     """Return True if the two transactions are duplicates by exact amount and date.
 
     Two transactions match when they have the same date, post the exact same

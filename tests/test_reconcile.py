@@ -12,10 +12,14 @@ The behaviour these lock down, in order of how expensive it is to get wrong:
   ledger.
 """
 
+import datetime
 import json
+import os
 
+from beancount import loader
 from click.testing import CliRunner
 
+from beancount_upbank import reconcile
 from beancount_upbank.cli import cli
 
 ACCOUNT = "Assets:Bank:Alice-Upbank"
@@ -118,7 +122,7 @@ def test_edits_land_in_the_included_files_that_hold_them(tmp_path):
     assert "-31.25 AUD" in up.read_text()
     assert "up_hold" not in up.read_text()
     assert "968.75 AUD" in other.read_text(), "the other file's snapshot moved"
-    assert "Verified against the untouched 2026-09-06 assertion" in result.output
+    assert "Verified against the untouched 2026-09-06 balance" in result.output
 
 
 def test_a_rollback_restores_every_file_it_edited(tmp_path):
@@ -128,6 +132,29 @@ def test_a_rollback_restores_every_file_it_edited(tmp_path):
     assert result.exit_code == 1
     assert "Rolled back" in result.output
     assert {path: path.read_text() for path in (up, other)} == before
+
+
+def test_newest_directives_in_two_files_are_refused_not_guessed(tmp_path):
+    # Line numbers in different files say nothing about which was written last,
+    # and the wrong pick would adjust the real anchor.
+    main, up, other, pull = _split_ledger(tmp_path, "968.75")
+    other.write_text(
+        other.read_text()
+        + "\n2026-09-06 balance Assets:Bank:Alice-Upbank  970.00 AUD\n"
+    )
+    before = {path: path.read_text() for path in (up, other)}
+    result = _invoke(ACCOUNT, main, "--pull", pull)
+    assert result.exit_code == 1
+    assert "more than one file" in result.output
+    assert {path: path.read_text() for path in (up, other)} == before
+
+
+def test_a_plugin_error_with_no_entry_is_not_a_failed_balance(monkeypatch):
+    class Bare:
+        message = "a plugin's own error type"
+
+    monkeypatch.setattr(loader, "load_file", lambda root: ([], [Bare()], {}))
+    assert reconcile.failing_balances("main", ACCOUNT, datetime.date(2026, 9, 1)) == []
 
 
 def test_drifted_hold_is_promoted_in_place(tmp_path):
@@ -143,10 +170,10 @@ def test_drifted_hold_is_promoted_in_place(tmp_path):
     assert "up_hold" not in text, "provisional tag removed once settled"
     assert ";drinks with a friend" in text, "hand-written annotation survives"
     assert '"EXAMPLE BREW, SYDNEY"' in text, "narration survives"
-    # The assertion taken while the hold was live moves by the drift; the newest
-    # one is the evidence and is left alone.
-    assert "968.75 AUD" in text, "anchor assertion untouched"
-    assert "970.00 AUD" not in text, "intermediate assertion adjusted"
+    # The balance directive taken while the hold was live moves by the drift;
+    # the newest one is the evidence and is left alone.
+    assert "968.75 AUD" in text, "anchor balance directive untouched"
+    assert "970.00 AUD" not in text, "intermediate balance directive adjusted"
     assert list(tmp_path.glob("*.bak")) == [], "no backup file left behind"
 
 
@@ -162,6 +189,22 @@ def test_released_hold_is_commented_out(tmp_path):
     text = ledger.read_text()
     assert ';2026-09-01 * "Example Brewing Co."' in text
     assert "released, never settled" in result.output
+
+
+def test_a_release_nothing_can_confirm_is_left_alone(tmp_path):
+    # Absence from a pull is only a hypothesis. With no balance directive dated
+    # after the entry, nothing would catch a wrong one, so it is not acted on.
+    unchecked = "".join(
+        line
+        for line in LEDGER.format(anchor="1000.00").splitlines(keepends=True)
+        if " balance " not in line
+    )
+    result, ledger = _run(
+        tmp_path, unchecked, _pull("SETTLED", "-9.99", up_id="some-other-transaction")
+    )
+    assert result.exit_code == 0, result.output
+    assert "can confirm the release, so it is left alone" in result.output
+    assert ledger.read_text() == unchecked
 
 
 def test_wrong_conclusion_rolls_back(tmp_path):
@@ -316,7 +359,7 @@ def test_a_snapshot_failing_for_another_reason_still_rolls_back(tmp_path):
 
 
 def test_transfer_leg_is_reported_not_edited(tmp_path):
-    # Both legs move together, but only this account's assertions are in scope,
+    # Both legs move together, but only this account's balances are in scope,
     # so editing would silently shift another account with no rollback signal.
     ledger = """\
 2000-01-01 open Assets:Bank:Alice-Upbank
@@ -595,3 +638,37 @@ def test_the_runs_own_edits_are_not_reported_as_a_gap(tmp_path):
     result, _ = _run(tmp_path, ledger, _pull("SETTLED", "-9.99", up_id="other"))
     assert result.exit_code == 1
     assert "gap of" not in result.output
+
+
+def test_an_amount_written_as_an_expression_is_left_to_fix_by_hand(tmp_path):
+    # Rewriting "the first number" would turn -15.00 * 2 into -31.25 * 2.
+    original = LEDGER.format(anchor="968.75").replace("-30.00 AUD", "-15.00 * 2 AUD")
+    result, ledger = _run(tmp_path, original, _pull("SETTLED", "-31.25"))
+    assert result.exit_code == 1
+    assert "fix it by hand" in result.output
+    assert "Traceback" not in result.output
+    assert ledger.read_text() == original
+
+
+def test_a_ledger_saved_while_up_is_read_is_left_alone(
+    monkeypatch, tmp_path, pinned_today
+):
+    # The edit shifts every line number the run planned against, and writing
+    # over it would lose it.
+    ledger = tmp_path / "ledger.beancount"
+
+    class SavedMeanwhile(FakeUp):
+        def accounts(self):
+            if not ledger.read_text().startswith(";"):
+                ledger.write_text("; a note added mid-run\n" + ledger.read_text())
+                stat = ledger.stat()
+                os.utime(ledger, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+            return super().accounts()
+
+    fake = SavedMeanwhile("968.75", _pull("SETTLED", "-31.25"))
+    result, _ = _fetch(monkeypatch, tmp_path, LEDGER.format(anchor="968.75"), fake)
+    assert result.exit_code == 1
+    assert "changed after the ledger was loaded" in result.output
+    assert ledger.read_text() == "; a note added mid-run\n" + LEDGER.format(
+        anchor="968.75"
+    )

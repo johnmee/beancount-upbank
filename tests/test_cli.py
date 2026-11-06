@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from beancount_upbank import cli as upbank_cli
-from beancount_upbank.client import UpbankError
+from beancount_upbank.client import Resource, UpbankError
 
 
 def _txn(created, value, status="SETTLED", up_id=None):
@@ -151,7 +151,8 @@ def test_token_warning_keeps_balance_stdout_clean(monkeypatch):
 def test_balance_midnight_reports_unsettled_transactions_cleanly(
     monkeypatch, pinned_today
 ):
-    a, b = [_txn(f"{pinned_today}T09:00:00+10:00", "-1.00")], []
+    a = [_txn(f"{pinned_today}T09:00:00+10:00", "-1.00")]
+    b: list[Resource] = []
     fake = FakeClient(["1.00"] * 4, [a, b, a, b, a, b])
     result = _invoke(monkeypatch, fake, "balance", "Assets:Bank:Up")
     assert result.exit_code == 1
@@ -178,7 +179,7 @@ def test_missing_token_is_a_usage_error():
 
 def _ping(monkeypatch, *args, env):
     """Run `upbank *args ping`; return (result, tokens the client was given)."""
-    tokens = []
+    tokens: list[str] = []
     result = _invoke(monkeypatch, PingClient(), *args, "ping", env=env, tokens=tokens)
     return result, tokens
 

@@ -114,4 +114,5 @@ def test_flag_is_configurable_and_currency_is_aud(importer):
 
     entries = Pending().extract(test_file)
     assert {e.flag for e in entries} == {"!"}
-    assert {e.postings[0].units.currency for e in entries} == {"AUD"}
+    units = [e.postings[0].units for e in entries]
+    assert all(u is not None and u.currency == "AUD" for u in units)

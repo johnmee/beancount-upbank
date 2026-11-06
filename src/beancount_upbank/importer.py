@@ -1,21 +1,18 @@
+import datetime
 import json
-from datetime import date
 
 import beancount
 import beangulp
 from beancount.core import amount, data
 from beangulp import cache
 
-from .client import CURRENCY
+from .client import CURRENCY, HELD
 from .dedup import exact_amount_comparator
 from .markers import HOLD_KEY, ID_KEY
 
-# Up's TransactionStatusEnum. There is no terminal "released" state: a hold that
-# is cancelled rather than settled simply disappears from the API.
-HELD = "HELD"
 
-
-class UpbankImporter(beangulp.Importer):
+# beangulp ships no type information, so to mypy its Importer is Any.
+class UpbankImporter(beangulp.Importer):  # type: ignore[misc]
     """Interface that all source importers need to comply with."""
 
     # A flag to use on new transaction. Override this flag as you prefer.
@@ -23,10 +20,10 @@ class UpbankImporter(beangulp.Importer):
 
     def __init__(
         self,
-        account_name="Assets:Bank:Upbank",
-        tags=data.EMPTY_SET,
-        account_id=None,
-    ):
+        account_name: str = "Assets:Bank:Upbank",
+        tags: frozenset[str] = data.EMPTY_SET,
+        account_id: str | None = None,
+    ) -> None:
         """
         Args:
             account_name: beancount account name for the upbank account.
@@ -46,10 +43,10 @@ class UpbankImporter(beangulp.Importer):
     cmp = staticmethod(exact_amount_comparator)
 
     @property
-    def name(self):
+    def name(self) -> str:
         return "Upbank"
 
-    def identify(self, filepath):
+    def identify(self, filepath: str) -> bool:
         """Return true if this importer matches the given file.
 
         Args:
@@ -81,7 +78,9 @@ class UpbankImporter(beangulp.Importer):
             pass
         return False
 
-    def extract(self, filepath, existing_entries=None):
+    def extract(
+        self, filepath: str, existing_entries: data.Directives | None = None
+    ) -> list[data.Transaction]:
         """Extract transactions from a file.
 
         Args:
@@ -91,13 +90,12 @@ class UpbankImporter(beangulp.Importer):
             is only provided if the user provides them via a flag in the
             extractor program.
         Returns:
-          A list of new, imported directives (usually mostly Transactions)
-          extracted from the file.
+          The transactions in the file, as beancount entries; nothing else.
         """
         file = cache.get_file(filepath)
         # Open the file as json
         transactions = json.loads(file.contents())
-        entries = []
+        entries: list[data.Transaction] = []
 
         for trans in reversed(transactions):
             if self.account_id is not None:
@@ -105,7 +103,7 @@ class UpbankImporter(beangulp.Importer):
                 if owner != self.account_id:
                     continue
             trans_id = trans["id"]
-            date_ = date.fromisoformat(trans["attributes"]["createdAt"][:10])
+            date_ = datetime.date.fromisoformat(trans["attributes"]["createdAt"][:10])
             raw_text = trans["attributes"]["rawText"]
             description = trans["attributes"]["description"]
             message = trans["attributes"]["message"]
@@ -156,13 +154,13 @@ class UpbankImporter(beangulp.Importer):
             )
             entries.append(txn)
 
-        # I'd like to insert a balance line but, to upbank, 'balance' means 'available balance',
-        # so includes HELD funds and perhaps others.
-        # The api-fetch can only snapshot a 'balance' at the moment of asking.
+        # No balance directive is written here: Up's 'balance' is the available
+        # balance, net of HELD funds, and can only be read as it is right now.
+        # `upbank balance` and `upbank reconcile` write one instead.
 
         return entries
 
-    def account(self, filepath):
+    def account(self, filepath: str) -> str:
         """Return an account associated with the given file.
 
         Note: If you don't implement this method you won't be able to move the
@@ -179,7 +177,7 @@ class UpbankImporter(beangulp.Importer):
         """
         return self.account_name
 
-    def filename(self, filepath):
+    def filename(self, filepath: str) -> str:
         """A filter that optionally renames a file before filing.
 
         This is used to make tidy filenames for filed/stored document files. If
@@ -196,7 +194,7 @@ class UpbankImporter(beangulp.Importer):
         account_str = self.account_name.split(":")[-1]
         return f"{account_str}.json"
 
-    def date(self, filepath):
+    def date(self, filepath: str) -> datetime.date | None:
         """Attempt to obtain a date that corresponds to the given file.
 
         Args:

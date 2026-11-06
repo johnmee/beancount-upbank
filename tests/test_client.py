@@ -1,4 +1,4 @@
-"""Tests for the Up client and its balance assertion.
+"""Tests for the Up client and the opening balance it computes.
 
 Beancount checks a `balance` directive at the *start* of its date; Up reports
 the balance *now*. These tests pin the conversion between the two.
@@ -6,6 +6,7 @@ the balance *now*. These tests pin the conversion between the two.
 
 import datetime
 import json
+import time
 from decimal import Decimal
 
 import pytest
@@ -14,9 +15,9 @@ import requests
 from beancount_upbank import client as upbank_client
 from beancount_upbank.client import (
     UpbankError,
+    opening_balance_and_transactions,
+    opening_balance_from,
     select_account,
-    start_of_day_assertion,
-    start_of_day_balance,
 )
 
 DAY = datetime.date(2026, 9, 7)
@@ -35,7 +36,7 @@ def _txn(created, value, status="SETTLED", up_id=None):
 
 def test_no_transactions_today_leaves_balance_unchanged():
     pulled = [_txn("2026-09-06T20:00:00+10:00", "-30.00")]
-    assert start_of_day_balance(Decimal("200.00"), pulled, DAY) == Decimal("200.00")
+    assert opening_balance_from(Decimal("200.00"), pulled, DAY) == Decimal("200.00")
 
 
 def test_todays_transactions_are_backed_out():
@@ -46,18 +47,18 @@ def test_todays_transactions_are_backed_out():
         _txn("2026-09-07T10:00:00+10:00", "-15.00"),
         _txn("2026-09-06T05:00:00+10:00", "30.00"),
     ]
-    assert start_of_day_balance(Decimal("145.00"), pulled, DAY) == Decimal("200.00")
+    assert opening_balance_from(Decimal("145.00"), pulled, DAY) == Decimal("200.00")
 
 
 def test_held_transactions_are_backed_out_too():
     # Up's balance is the available balance, with holds already deducted.
     pulled = [_txn("2026-09-07T13:00:00+10:00", "-40.00", status="HELD")]
-    assert start_of_day_balance(Decimal("160.00"), pulled, DAY) == Decimal("200.00")
+    assert opening_balance_from(Decimal("160.00"), pulled, DAY) == Decimal("200.00")
 
 
 def test_credits_today_are_backed_out():
     pulled = [_txn("2026-09-07T20:00:00+10:00", "250.00")]
-    assert start_of_day_balance(Decimal("450.00"), pulled, DAY) == Decimal("200.00")
+    assert opening_balance_from(Decimal("450.00"), pulled, DAY) == Decimal("200.00")
 
 
 class FakeClient:
@@ -76,7 +77,9 @@ class FakeClient:
         return self.pulls.pop(0)
 
 
-def test_get_recent_looks_back_the_given_number_of_days_from_now(monkeypatch):
+def test_get_recent_starts_at_sydney_midnight_the_given_days_ago(
+    monkeypatch, pinned_today
+):
     seen = {}
 
     def fake_get(self, path, params=None):
@@ -84,39 +87,65 @@ def test_get_recent_looks_back_the_given_number_of_days_from_now(monkeypatch):
         return []
 
     monkeypatch.setattr(upbank_client.UpbankClient, "get", fake_get)
-    before = datetime.datetime.now(datetime.timezone.utc)
     upbank_client.UpbankClient("t").get_recent(30)
-    after = datetime.datetime.now(datetime.timezone.utc)
 
+    # A whole first day: reconcile --pull trusts every day from the pull's
+    # earliest transaction on, so a part-day would make a hold look released.
     since = datetime.datetime.fromisoformat(seen["filter[since]"])
-    assert since.tzinfo is not None
-    assert (
-        before - datetime.timedelta(days=30)
-        <= since
-        <= after - datetime.timedelta(days=30)
+    assert since == datetime.datetime.combine(
+        pinned_today - datetime.timedelta(days=30),
+        datetime.time(),
+        tzinfo=upbank_client.UP_TZ,
     )
 
 
-def test_assertion_backs_out_todays_transactions(pinned_today):
+def test_opening_balance_backs_out_todays_transactions(pinned_today):
     pulled = [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     fake = FakeClient(["160.00", "160.00"], [pulled, pulled])
-    assert start_of_day_assertion(fake) == (pinned_today, Decimal("200.00"))
+    assert opening_balance_and_transactions(fake) == (
+        pinned_today,
+        Decimal("200.00"),
+        pulled,
+    )
 
 
-def test_assertion_retries_when_a_transaction_lands_mid_read(pinned_today):
+def test_opening_balance_retries_when_a_transaction_lands_mid_read(pinned_today):
     first = [_txn(f"{pinned_today}T10:00:00+10:00", "-15.00")]
     second = first + [_txn(f"{pinned_today}T13:00:00+10:00", "-40.00")]
     # The balance read happens between the two pulls, so it may or may not
     # include the transaction that arrived; the pulls disagree, so retry.
     fake = FakeClient(["145.00"] * 3, [first, second, second, second])
-    assert start_of_day_assertion(fake) == (pinned_today, Decimal("200.00"))
+    assert opening_balance_and_transactions(fake) == (
+        pinned_today,
+        Decimal("200.00"),
+        second,
+    )
 
 
-def test_assertion_gives_up_when_transactions_never_settle(pinned_today):
+def test_a_read_that_straddles_midnight_is_retried_and_dated_the_new_day(
+    monkeypatch,
+):
+    day = datetime.date(2026, 9, 7)
+    after_midnight = day + datetime.timedelta(days=1)
+    # Today is read for the pull's start, then either side of each balance read:
+    # midnight passes during the first balance read.
+    dates = iter([day, day, after_midnight, after_midnight, after_midnight])
+    monkeypatch.setattr(upbank_client, "sydney_today", lambda: next(dates))
+    pulled = [_txn(f"{after_midnight}T00:00:30+10:00", "-20.00")]
+    fake = FakeClient(["180.00"] * 3, [pulled, pulled, pulled])
+    # Dated the old day, the $20 spent after midnight would not be backed out.
+    assert opening_balance_and_transactions(fake) == (
+        after_midnight,
+        Decimal("200.00"),
+        pulled,
+    )
+
+
+def test_opening_balance_gives_up_when_transactions_never_settle(pinned_today):
     pulls = [[_txn(f"{pinned_today}T10:00:00+10:00", str(-n))] for n in range(1, 7)]
     fake = FakeClient(["100.00"] * 4, pulls)
     with pytest.raises(UpbankError):
-        start_of_day_assertion(fake)
+        opening_balance_and_transactions(fake)
 
 
 @pytest.fixture(autouse=True)
@@ -126,7 +155,7 @@ def _no_network(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError(f"test tried to reach the network: {args}")
 
-    monkeypatch.setattr(upbank_client.requests, "get", refuse)
+    monkeypatch.setattr(requests, "get", refuse)
 
 
 class FakeResponse:
@@ -157,15 +186,15 @@ def _script_requests(monkeypatch, *responses):
             raise item
         return item
 
-    monkeypatch.setattr(upbank_client.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     return calls
 
 
 @pytest.fixture
 def sleeps(monkeypatch):
     """Record the delays the client would have slept, without sleeping."""
-    slept = []
-    monkeypatch.setattr(upbank_client.time, "sleep", slept.append)
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
     return slept
 
 
@@ -215,11 +244,12 @@ def test_naive_times_are_refused_rather_than_sent_without_an_offset():
 
 def test_get_month_uses_up_time_whatever_the_machine_clock(monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        upbank_client.UpbankClient,
-        "transactions",
-        lambda self, since, until=None, **kw: seen.append((since, until)) or [],
-    )
+
+    def fake_transactions(self, since, until=None, **kw):
+        seen.append((since, until))
+        return []
+
+    monkeypatch.setattr(upbank_client.UpbankClient, "transactions", fake_transactions)
     client = upbank_client.UpbankClient("t")
     client.get_month(2026, 3)
     client.get_month(2026, 12)
