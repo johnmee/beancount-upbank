@@ -208,7 +208,7 @@ Python 3.10 or newer, and Beancount 3.
    - `Error: ... has 2 balance directives dated ...` or `... in more than one
      file`: delete all but one of the lines listed and run again.
 
-   See [Pending transactions and `upbank reconcile`](#pending-transactions-and-upbank-reconcile)
+   See [Pending transactions and `upbank reconcile`](https://github.com/johnmee/beancount-upbank#pending-transactions-and-upbank-reconcile)
    for the full rules.
 
 ## importer customisation
@@ -326,10 +326,11 @@ uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
+uv run pyright
 ```
 
 The tests never reach the network.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/johnmee/beancount-upbank/blob/main/LICENSE).

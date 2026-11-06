@@ -80,10 +80,10 @@ class FakeClient:
 def test_get_recent_starts_at_sydney_midnight_the_given_days_ago(
     monkeypatch, pinned_today
 ):
-    seen = {}
+    seen: upbank_client.Params = {}
 
     def fake_get(self, path, params=None):
-        seen.update(params)
+        seen.update(params or {})
         return []
 
     monkeypatch.setattr(upbank_client.UpbankClient, "get", fake_get)
@@ -91,7 +91,7 @@ def test_get_recent_starts_at_sydney_midnight_the_given_days_ago(
 
     # A whole first day: reconcile --pull trusts every day from the pull's
     # earliest transaction on, so a part-day would make a hold look released.
-    since = datetime.datetime.fromisoformat(seen["filter[since]"])
+    since = datetime.datetime.fromisoformat(str(seen["filter[since]"]))
     assert since == datetime.datetime.combine(
         pinned_today - datetime.timedelta(days=30),
         datetime.time(),
@@ -222,10 +222,10 @@ def test_next_page_is_fetched_without_resending_the_query(monkeypatch, sleeps):
 
 
 def test_times_are_sent_as_rfc3339(monkeypatch, sleeps):
-    seen = {}
+    seen: upbank_client.Params = {}
 
     def fake_get(self, path, params=None):
-        seen.update(params)
+        seen.update(params or {})
         return []
 
     monkeypatch.setattr(upbank_client.UpbankClient, "get", fake_get)

@@ -1,9 +1,8 @@
 import datetime
 import json
 
-import beancount
 import beangulp
-from beancount.core import amount, data
+from beancount.core import amount, data, flags, number
 from beangulp import cache
 
 from .client import CURRENCY, HELD
@@ -16,7 +15,7 @@ class UpbankImporter(beangulp.Importer):  # type: ignore[misc]
     """Interface that all source importers need to comply with."""
 
     # A flag to use on new transaction. Override this flag as you prefer.
-    FLAG = beancount.core.flags.FLAG_OKAY
+    FLAG = flags.FLAG_OKAY
 
     def __init__(
         self,
@@ -79,13 +78,13 @@ class UpbankImporter(beangulp.Importer):  # type: ignore[misc]
         return False
 
     def extract(
-        self, filepath: str, existing_entries: data.Directives | None = None
-    ) -> list[data.Transaction]:
+        self, filepath: str, existing: data.Directives | None = None
+    ) -> data.Directives:
         """Extract transactions from a file.
 
         Args:
           filepath: Filesystem path to the document being imported.
-          existing_entries: An optional list of existing directives loaded from
+          existing: An optional list of existing directives loaded from
             the ledger which is intended to contain the extracted entries. This
             is only provided if the user provides them via a flag in the
             extractor program.
@@ -95,7 +94,7 @@ class UpbankImporter(beangulp.Importer):  # type: ignore[misc]
         file = cache.get_file(filepath)
         # Open the file as json
         transactions = json.loads(file.contents())
-        entries: list[data.Transaction] = []
+        entries: data.Directives = []
 
         for trans in reversed(transactions):
             if self.account_id is not None:
@@ -113,7 +112,7 @@ class UpbankImporter(beangulp.Importer):  # type: ignore[misc]
                 else:
                     raw_text += " " + message
             value = amount.Amount(
-                beancount.core.number.D(trans["attributes"]["amount"]["value"]),
+                number.D(trans["attributes"]["amount"]["value"]),
                 CURRENCY,
             )
             posting = data.Posting(self.account_name, value, None, None, None, None)

@@ -120,7 +120,7 @@ def test_dedup_matches_settled_against_held_by_up_id():
     settled = _txn("-31.25")
     settled.meta["__up_id__"] = up_id
 
-    new = [settled]
+    new: list[data.Directive] = [settled]
     UpbankImporter(ACCOUNT).deduplicate(new, existing=[held])
     assert new[0].meta.get("__duplicate__"), (
         "same Up id must be a duplicate even though the amount drifted"

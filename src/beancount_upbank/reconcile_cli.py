@@ -206,6 +206,8 @@ def run(
     # Pick the anchor balance directive and plan the line edits.
     files = Files(loaded)
     append: tuple[str, str] | None = None
+    existing: data.Balance | None = None
+    target: str | None = None
     anchor: data.Balance | None
     if fresh is None:
         anchor = newest_balance(entries, account)

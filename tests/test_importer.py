@@ -3,10 +3,17 @@ import logging
 import os
 
 import pytest
+from beancount.core import data
 
 from beancount_upbank import UpbankImporter, markers
 
 logging.basicConfig(level=logging.DEBUG)
+
+
+def _transactions(entries: data.Directives) -> list[data.Transaction]:
+    """extract()'s entries, which are all transactions, typed as such."""
+    assert all(isinstance(e, data.Transaction) for e in entries)
+    return [e for e in entries if isinstance(e, data.Transaction)]
 
 
 # Define the importer instance
@@ -90,10 +97,10 @@ def test_account_id_keeps_only_that_accounts_transactions(tmp_path):
     path = _two_account_file(tmp_path)
     spending = "00000000-0000-4000-8000-0000000000a1"
 
-    kept = UpbankImporter(account_id=spending).extract(path)
+    kept = _transactions(UpbankImporter(account_id=spending).extract(path))
     assert [e.payee for e in kept] == ["ALICE EXAMPLE", "Cafe Example"]
 
-    saver = UpbankImporter(account_id="saver-account").extract(path)
+    saver = _transactions(UpbankImporter(account_id="saver-account").extract(path))
     assert [e.payee for e in saver] == ["Example Books"]
 
 
@@ -112,7 +119,7 @@ def test_flag_is_configurable_and_currency_is_aud(importer):
     class Pending(UpbankImporter):
         FLAG = "!"
 
-    entries = Pending().extract(test_file)
+    entries = _transactions(Pending().extract(test_file))
     assert {e.flag for e in entries} == {"!"}
     units = [e.postings[0].units for e in entries]
     assert all(u is not None and u.currency == "AUD" for u in units)
