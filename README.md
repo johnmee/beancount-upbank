@@ -1,5 +1,7 @@
 # beancount-upbank
 
+[![PyPI](https://img.shields.io/pypi/v/beancount-upbank)](https://pypi.org/project/beancount-upbank/)
+
 Import [Up Bank](https://up.com.au/) (Australia) transactions into
 [Beancount](https://beancount.github.io/).
 

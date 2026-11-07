@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.0
 
 First release, extracted from `aussie-bean-tools`.
