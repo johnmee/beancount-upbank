@@ -2,9 +2,16 @@
 
 ## Unreleased
 
+## 0.1.1
+
 - `upbank reconcile` writes today's `balance` directive in front of the first
-  entry dated today, not after it, so the file reads in the order beancount
-  checks it. With nothing dated today it still goes at the end of the file.
+  entry dated today, not after it, so the file reads in the order Beancount
+  checks it, and reports it as `FILE:LINE: insert`. A comment directly above
+  that entry stays with it. With nothing dated today the directive still goes
+  at the end of the file.
+- The README is rewritten: how `up_hold` and reconcile work, how Beancount's
+  start-of-day balance check relates to Up Bank's live balance, and examples
+  of `upbank balance`.
 
 ## 0.1.0
 
