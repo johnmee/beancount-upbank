@@ -261,17 +261,23 @@ def newest_balance(entries: data.Directives, account: str) -> data.Balance | Non
 
 def place_balance(
     entries: data.Directives, account: str, day: datetime.date
-) -> tuple[data.Balance | None, str | None]:
+) -> tuple[data.Balance | None, str | None, int | None]:
     """Where a fresh ``balance`` directive dated ``day`` goes.
 
-    Returns ``(existing, path)``. ``existing`` is the account's directive
-    already dated ``day``, which is replaced rather than duplicated; then
-    ``path`` is None. Otherwise ``existing`` is None and ``path`` is the file to
-    append to: the one holding the account's newest-dated directive or
-    transaction, so a new year's file takes over as soon as the import writes
-    to it. Transfers from your other accounts are left out: they live in the
-    other account's file. On a tie a transaction wins, being where the
-    importer writes.
+    Returns ``(existing, path, before)``. ``existing`` is the account's
+    directive already dated ``day``, which is replaced rather than duplicated;
+    then ``path`` and ``before`` are None.
+
+    Otherwise ``existing`` is None and ``path`` is the file to write to: the
+    one holding the account's newest-dated directive or transaction, so a new
+    year's file takes over as soon as the import writes to it. Transfers from
+    your other accounts are left out: they live in the other account's file.
+    On a tie a transaction wins, being where the importer writes.
+
+    ``before`` is the line of the first entry in ``path`` dated ``day`` or
+    later, which the directive goes in front of: beancount checks a balance at
+    the start of its date, so it reads in order above that day's transactions.
+    None when there is no such entry, and the directive goes at the end.
 
     Raises:
         ReconcileError: two directives are already dated ``day``, or the
@@ -290,7 +296,7 @@ def place_balance(
             + "\n".join(f"  {e.meta['filename']}:{e.meta['lineno']}" for e in same_day)
         )
     if same_day:
-        return same_day[0], None
+        return same_day[0], None, None
     transactions = [
         e
         for e in entries
@@ -306,7 +312,13 @@ def place_balance(
             "so there is no file to write today's balance directive to."
         )
     newest = max(candidates, key=lambda e: (e.date, isinstance(e, data.Transaction)))
-    return None, newest.meta["filename"]
+    path: str = newest.meta["filename"]
+    later = [
+        int(e.meta["lineno"])
+        for e in entries
+        if e.date >= day and e.meta.get("filename") == path and "lineno" in e.meta
+    ]
+    return None, path, min(later, default=None)
 
 
 def format_balance(day: datetime.date, account: str, number: Decimal) -> str:
@@ -505,11 +517,13 @@ def apply_edits(
     edits: Edits,
     balances: Balances,
     account: str,
-    append: tuple[str, str] | None = None,
+    new: tuple[str, str, int | None] | None = None,
 ) -> None:
     """Write the planned edits over each file's original lines in ``files``.
 
-    ``append`` is ``(path, line)``: a directive to add at the end of that file.
+    ``new`` is ``(path, line, before)``: a directive to add to that file, in
+    front of line ``before`` (and any comment lines directly above it), or at
+    the end when ``before`` is None.
     """
     # A deleted line becomes "", which writes nothing but keeps every later
     # line number valid until the write.
@@ -533,15 +547,27 @@ def apply_edits(
     for (path, lineno), number in balances.items():
         text = lines(path)
         text[lineno - 1] = _rewrite_number(text[lineno - 1], account, number)
-    if append is not None:
-        path, line = append
+    if new is not None:
+        path, line, before = new
         text = lines(path)
         last = next((ln for ln in reversed(text) if ln), "")
         # Match the file's own line ending, so a CRLF ledger stays CRLF.
         eol = "\r\n" if last.endswith("\r\n") else "\n"
-        if last and not last.endswith("\n"):
-            text.append(eol)
-        text.append(f"{eol}{line}{eol}")
+        if before is None:
+            if last and not last.endswith("\n"):
+                text.append(eol)
+            text.append(f"{eol}{line}{eol}")
+        else:
+            # Last, so every edit above still found its original line. Step
+            # back over a comment heading the entry, keeping the two together;
+            # "" is a deleted line, which writes nothing.
+            i = before - 1
+            j = i - 1
+            while j >= 0 and (text[j] == "" or text[j].lstrip().startswith(";")):
+                if text[j]:
+                    i = j
+                j -= 1
+            text[i] = f"{line}{eol}{eol}{text[i]}"
     # Last chance to notice someone saving a file mid-run: once written, their
     # change would be lost, and restore() would put back the stale copy.
     for path in out:

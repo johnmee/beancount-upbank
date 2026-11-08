@@ -205,14 +205,15 @@ def run(
 
     # Pick the anchor balance directive and plan the line edits.
     files = Files(loaded)
-    append: tuple[str, str] | None = None
+    new: tuple[str, str, int | None] | None = None
     existing: data.Balance | None = None
     target: str | None = None
+    before: int | None = None
     anchor: data.Balance | None
     if fresh is None:
         anchor = newest_balance(entries, account)
     else:
-        existing, target = place_balance(entries, account, today)
+        existing, target, before = place_balance(entries, account, today)
         meta = dict(existing.meta) if existing else {}
         anchor = data.Balance(
             meta, today, account, amount.Amount(fresh, client.CURRENCY), None, None
@@ -252,15 +253,18 @@ def run(
             f"(that snapshot included the hold)"
         )
 
-    # Plan today's balance directive: append it, or replace a stale one.
+    # Plan today's balance directive: add it, or replace a stale one.
     if fresh is not None:
         line = format_balance(today, account, fresh)
         if existing is None:
             # place_balance names a file whenever there is no directive.
             assert target is not None
             files[target]
-            append = (target, line)
-            click.echo(f"\n  {_at(target)}: append  {line}")
+            new = (target, line, before)
+            if before is None:
+                click.echo(f"\n  {_at(target)}: append  {line}")
+            else:
+                click.echo(f"\n  {_at(target, before)}: insert  {line}")
         elif existing.amount.number != fresh:
             where = (existing.meta["filename"], existing.meta["lineno"])
             files[where[0]]
@@ -268,7 +272,7 @@ def run(
             click.echo(f"\n  {_at(*where)}: replace with  {line}")
 
     # No edits: explain any balance gap, then stop.
-    if not edits and not balances and append is None:
+    if not edits and not balances and new is None:
         # Nothing to promote, but a gap against Up's balance still needs
         # explaining -- a hold released after ageing out of the pull window
         # leaves no other trace.
@@ -279,7 +283,7 @@ def run(
 
     # Dry run: count the edits, write nothing.
     if dry_run:
-        changes = len(edits) + len(balances) + (append is not None)
+        changes = len(edits) + len(balances) + (new is not None)
         click.echo(f"\n{changes} line edit(s) pending; re-run without --dry-run.")
         return
 
@@ -292,7 +296,7 @@ def run(
         touched.append(today - datetime.timedelta(days=1))
     since = min(touched)
     try:
-        apply_edits(files, edits, balances, account, append)
+        apply_edits(files, edits, balances, account, new)
         failures = failing_balances(root, account, since)
     except BaseException:
         # Including Ctrl-C: the originals exist only in memory, so put them

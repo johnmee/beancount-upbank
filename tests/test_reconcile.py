@@ -486,6 +486,70 @@ def test_with_no_holds_it_still_writes_todays_directive(
     assert str(pinned_today) in ledger.read_text()
 
 
+def _with_todays_purchase(pinned_today, comment=""):
+    """The settled ledger plus a purchase dated today, then a closing poptag."""
+    settled = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
+    purchase = (
+        f'{comment}{pinned_today} * "Coffee"\n'
+        "  Assets:Bank:Alice-Upbank     -5.00 AUD\n"
+        "  Expenses:Food:Alcohol\n"
+    )
+    return f"pushtag #alice\n{settled}\n{purchase}\npoptag #alice\n"
+
+
+def test_todays_directive_goes_before_todays_transactions(
+    monkeypatch, tmp_path, pinned_today
+):
+    # Beancount checks a balance at the start of its date, so it reads in
+    # order above the day's transactions, not after them.
+    original = _with_todays_purchase(pinned_today)
+    result, ledger = _fetch(monkeypatch, tmp_path, original, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert "insert" in result.output
+    directive = f"{pinned_today} balance {ACCOUNT}"
+    assert ledger.read_text() == original.replace(
+        f"{pinned_today} *", f"{directive:<37}     970.00 AUD\n\n{pinned_today} *"
+    )
+
+
+def test_todays_directive_keeps_a_comment_with_its_transaction(
+    monkeypatch, tmp_path, pinned_today
+):
+    original = _with_todays_purchase(pinned_today, comment="; flat white\n")
+    result, ledger = _fetch(monkeypatch, tmp_path, original, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert f"970.00 AUD\n\n; flat white\n{pinned_today} *" in ledger.read_text()
+
+
+def test_with_nothing_dated_today_the_directive_goes_at_the_end(
+    monkeypatch, tmp_path, pinned_today
+):
+    settled = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
+    result, ledger = _fetch(monkeypatch, tmp_path, settled, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert "append" in result.output
+    last = ledger.read_text().rstrip("\n").splitlines()[-1]
+    assert last.startswith(f"{pinned_today} balance {ACCOUNT}")
+
+
+def test_an_inserted_directive_in_a_crlf_ledger_stays_crlf(
+    monkeypatch, tmp_path, pinned_today
+):
+    from beancount_upbank import cli as upbank_cli
+
+    monkeypatch.setattr(upbank_cli, "UpbankClient", lambda token: FakeUp("970.00", []))
+    ledger = tmp_path / "ledger.beancount"
+    text = _with_todays_purchase(pinned_today).replace("\n", "\r\n")
+    ledger.write_bytes(text.encode())
+    result = CliRunner().invoke(
+        cli, ["reconcile", ACCOUNT, str(ledger)], env={"UPBANK_TOKEN": "up:yeah:test"}
+    )
+    assert result.exit_code == 0, result.output
+    after = ledger.read_bytes()
+    assert f"{pinned_today} balance".encode() in after
+    assert b"\n" not in after.replace(b"\r\n", b"")
+
+
 def test_fetch_dry_run_changes_nothing(monkeypatch, tmp_path, pinned_today):
     original = LEDGER.format(anchor="968.75")
     fake = FakeUp("968.75", _pull("SETTLED", "-31.25"))

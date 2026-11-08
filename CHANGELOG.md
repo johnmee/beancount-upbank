@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `upbank reconcile` writes today's `balance` directive in front of the first
+  entry dated today, not after it, so the file reads in the order beancount
+  checks it. With nothing dated today it still goes at the end of the file.
+
 ## 0.1.0
 
 First release, extracted from `aussie-bean-tools`.
