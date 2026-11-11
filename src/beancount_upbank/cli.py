@@ -211,7 +211,8 @@ def reconcile(
     By default Up is asked now: the transactions back to the oldest hold,
     and the balance, read together. Today's balance directive is written from
     that balance (replacing one already dated today), and the edits are checked
-    against it.
+    against it. If nothing has happened since the last balance directive, that
+    one is redated to today instead of a second being written.
 
     With --pull FILE, a file saved by `upbank pull`, nothing is fetched and no
     directive is written; the edits are checked against the newest balance

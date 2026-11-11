@@ -524,8 +524,14 @@ def test_todays_directive_keeps_a_comment_with_its_transaction(
 def test_with_nothing_dated_today_the_directive_goes_at_the_end(
     monkeypatch, tmp_path, pinned_today
 ):
+    # A purchase since the last directive, so there is a new balance to record.
     settled = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
-    result, ledger = _fetch(monkeypatch, tmp_path, settled, FakeUp("970.00", []))
+    settled += (
+        '\n2026-09-06 * "Coffee"\n'
+        "  Assets:Bank:Alice-Upbank     -5.00 AUD\n"
+        "  Expenses:Food:Alcohol\n"
+    )
+    result, ledger = _fetch(monkeypatch, tmp_path, settled, FakeUp("965.00", []))
     assert result.exit_code == 0, result.output
     assert "append" in result.output
     last = ledger.read_text().rstrip("\n").splitlines()[-1]
@@ -555,7 +561,7 @@ def test_fetch_dry_run_changes_nothing(monkeypatch, tmp_path, pinned_today):
     fake = FakeUp("968.75", _pull("SETTLED", "-31.25"))
     result, ledger = _fetch(monkeypatch, tmp_path, original, fake, "--dry-run")
     assert result.exit_code == 0, result.output
-    assert "append" in result.output
+    assert "4 line edit(s) pending" in result.output
     assert ledger.read_text() == original
 
 
@@ -736,3 +742,125 @@ def test_a_ledger_saved_while_up_is_read_is_left_alone(
     assert ledger.read_text() == "; a note added mid-run\n" + LEDGER.format(
         anchor="968.75"
     )
+
+
+# A balance directive that would only repeat the last one is redated instead.
+
+SETTLED = LEDGER.format(anchor="970.00").replace('  up_hold: "held-example"\n', "")
+LAST = "2026-09-06 balance Assets:Bank:Alice-Upbank    970.00 AUD"
+
+
+def _balance_lines(text):
+    return [line for line in text.splitlines() if " balance " in line]
+
+
+def test_an_unchanged_balance_is_redated_not_repeated(
+    monkeypatch, tmp_path, pinned_today
+):
+    # The last thing in the ledger for the account is a balance directive, and
+    # Up still reports that amount: nothing has happened since.
+    result, ledger = _fetch(monkeypatch, tmp_path, SETTLED, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert f"redate to {pinned_today}" in result.output
+    assert "append" not in result.output
+    # Only the date changed; the line keeps its own spacing.
+    assert ledger.read_text() == SETTLED.replace(LAST, LAST.replace("09-06", "09-07"))
+    assert "Verified against Up's balance (970.00 AUD)" in result.output
+
+
+def test_a_redate_dry_run_changes_nothing(monkeypatch, tmp_path, pinned_today):
+    fake = FakeUp("970.00", [])
+    result, ledger = _fetch(monkeypatch, tmp_path, SETTLED, fake, "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert f"redate to {pinned_today}" in result.output
+    assert "1 line edit(s) pending" in result.output
+    assert ledger.read_text() == SETTLED
+
+
+def test_a_changed_balance_gets_its_own_directive(monkeypatch, tmp_path, pinned_today):
+    spent = SETTLED + (
+        '\n2026-09-06 * "Coffee"\n'
+        "  Assets:Bank:Alice-Upbank     -5.00 AUD\n"
+        "  Expenses:Food:Alcohol\n"
+    )
+    result, ledger = _fetch(monkeypatch, tmp_path, spent, FakeUp("965.00", []))
+    assert result.exit_code == 0, result.output
+    assert "redate to" not in result.output
+    lines = _balance_lines(ledger.read_text())
+    assert lines[-2] == LAST
+    assert lines[-1].startswith(f"{pinned_today} balance {ACCOUNT}")
+    assert lines[-1].endswith(" 965.00 AUD")
+
+
+def test_transactions_that_cancel_out_still_get_a_new_directive(
+    monkeypatch, tmp_path, pinned_today
+):
+    # The amount is the same, but the last directive is no longer the balance:
+    # the earlier one records a real checkpoint, so it stays.
+    there_and_back = SETTLED + (
+        '\n2026-09-06 * "Coffee"\n'
+        "  Assets:Bank:Alice-Upbank     -5.00 AUD\n"
+        "  Expenses:Food:Alcohol\n"
+        '\n2026-09-06 * "Coffee refund"\n'
+        "  Assets:Bank:Alice-Upbank      5.00 AUD\n"
+        "  Expenses:Food:Alcohol\n"
+    )
+    fake = FakeUp("970.00", [])
+    result, ledger = _fetch(monkeypatch, tmp_path, there_and_back, fake)
+    assert result.exit_code == 0, result.output
+    assert "redate to" not in result.output
+    lines = _balance_lines(ledger.read_text())
+    assert lines[-2] == LAST
+    assert lines[-1].startswith(f"{pinned_today} balance {ACCOUNT}")
+
+
+def test_a_transfer_recorded_in_another_file_also_counts_as_new(
+    monkeypatch, tmp_path, pinned_today
+):
+    from beancount_upbank import cli as upbank_cli
+
+    monkeypatch.setattr(upbank_cli, "UpbankClient", lambda token: FakeUp("950.00", []))
+    main = tmp_path / "main.beancount"
+    main.write_text('include "up.beancount"\ninclude "joint.beancount"\n')
+    up = tmp_path / "up.beancount"
+    up.write_text(SETTLED)
+    (tmp_path / "joint.beancount").write_text(
+        "2000-01-01 open Assets:Bank:Joint\n"
+        '\n2026-09-06 * "To joint"\n'
+        "  Assets:Bank:Joint           20.00 AUD\n"
+        "  Assets:Bank:Alice-Upbank   -20.00 AUD\n"
+    )
+    result = CliRunner().invoke(
+        cli, ["reconcile", ACCOUNT, str(main)], env={"UPBANK_TOKEN": "up:yeah:test"}
+    )
+    assert result.exit_code == 0, result.output
+    assert "redate to" not in result.output
+    lines = _balance_lines(up.read_text())
+    assert lines[-2] == LAST
+    assert lines[-1].endswith(" 950.00 AUD")
+
+
+def test_a_balance_corrected_by_a_release_is_then_redated(
+    monkeypatch, tmp_path, pinned_today
+):
+    # The hold was released, so the last directive moves from 970 to 1000,
+    # which is what Up reports: one line, corrected and redated.
+    fake = FakeUp("1000.00", [])
+    result, ledger = _fetch(monkeypatch, tmp_path, LEDGER.format(anchor="970.00"), fake)
+    assert result.exit_code == 0, result.output
+    assert f"redate to {pinned_today}" in result.output
+    lines = _balance_lines(ledger.read_text())
+    assert [line.split()[0] for line in lines] == ["2026-09-02", str(pinned_today)]
+    assert lines[-1].endswith(" 1000.00 AUD")
+
+
+def test_two_directives_on_the_last_date_are_left_and_a_new_one_added(
+    monkeypatch, tmp_path, pinned_today
+):
+    doubled = SETTLED + f"\n{LAST}\n"
+    result, ledger = _fetch(monkeypatch, tmp_path, doubled, FakeUp("970.00", []))
+    assert result.exit_code == 0, result.output
+    assert "redate to" not in result.output
+    lines = _balance_lines(ledger.read_text())
+    assert lines[-3:-1] == [LAST, LAST]
+    assert lines[-1].startswith(f"{pinned_today} balance {ACCOUNT}")

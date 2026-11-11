@@ -89,7 +89,8 @@ yourself; it cannot and does not move money.
    ```
 
    This resolves the Up Bank transactions that have settled or been released,
-   and writes a balance directive.
+   and writes a balance directive, or redates the last one if nothing has
+   happened since.
 
    - `Assets:Bank:Up`: the Beancount account the Up Bank transactions post to.
    - `main.beancount`: your main ledger. Any files it `include`s are covered
@@ -170,6 +171,19 @@ start-of-day balance that Beancount expects:
 ❯  upbank balance Assets:Bank:Up
 2026-11-08 balance Assets:Bank:Up         381.76 AUD
 ```
+
+`upbank reconcile` writes the same directive into your ledger. If nothing has
+happened since the last one (it has the amount Up Bank reports, and no
+transaction posts to the account on or after its date), reconcile changes that
+directive's date to today instead of adding another beneath it:
+
+```
+-2026-11-06 balance Assets:Bank:Up         381.76 AUD
++2026-11-08 balance Assets:Bank:Up         381.76 AUD
+```
+
+So a quiet week leaves one directive, not one per run. Any transaction since,
+even two that cancel out, gets a new directive.
 
 Without an account, `upbank balance` prints the available balance right now:
 

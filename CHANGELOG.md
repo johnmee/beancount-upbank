@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `upbank reconcile` no longer writes a second `balance` directive when nothing
+  has happened since the last one: now it changes the date of the last
+  balance directive to today's date.
+
 ## 0.1.1
 
 - `upbank reconcile` writes today's `balance` directive in front of the first
