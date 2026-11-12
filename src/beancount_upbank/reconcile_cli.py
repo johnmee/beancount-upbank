@@ -24,6 +24,7 @@ from .reconcile import (
     Files,
     Hold,
     Kind,
+    Location,
     ReconcileError,
     apply_edits,
     check_opened,
@@ -37,6 +38,8 @@ from .reconcile import (
     oldest_hold,
     place_balance,
     plan_edits,
+    redated,
+    repeated_balance,
     restore,
     shortfall_at,
 )
@@ -253,10 +256,29 @@ def run(
             f"(that snapshot included the hold)"
         )
 
-    # Plan today's balance directive: add it, or replace a stale one.
+    # Plan today's balance directive: redate the last one if nothing has
+    # happened since, else add it, or replace a stale one already dated today.
     if fresh is not None:
         line = format_balance(today, account, fresh)
-        if existing is None:
+        last = (
+            repeated_balance(entries, account, today, fresh, balances)
+            if existing is None
+            else None
+        )
+        at: Location | None = None
+        if last is not None:
+            at = (last.meta["filename"], last.meta["lineno"])
+            # Read the line itself: one that does not open with its date is
+            # left as it is, and a new directive written.
+            if redated(files[at[0]][at[1] - 1], today) is None:
+                at = None
+        if last is not None and at is not None:
+            edits[at] = ("redate", today)
+            click.echo(
+                f"\n  {_at(*at)}: redate to {today}  "
+                f"({fresh} AUD, nothing new since {last.date})"
+            )
+        elif existing is None:
             # place_balance names a file whenever there is no directive.
             assert target is not None
             files[target]
@@ -283,7 +305,8 @@ def run(
 
     # Dry run: count the edits, write nothing.
     if dry_run:
-        changes = len(edits) + len(balances) + (new is not None)
+        # A directive both corrected and redated is one line, counted once.
+        changes = len(edits.keys() | balances.keys()) + (new is not None)
         click.echo(f"\n{changes} line edit(s) pending; re-run without --dry-run.")
         return
 

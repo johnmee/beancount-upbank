@@ -38,7 +38,9 @@ USAGE
 ``--pull FILE``
     Up JSON saved by ``upbank pull``. Without it, Up is read live (the balance,
     and transactions back to the oldest hold, together) and today's balance
-    directive is written from that read.
+    directive is written from that read. When the last balance directive
+    already has that amount and no transaction has posted to the account
+    since, it is redated to today rather than repeated.
 ``--dry-run``
     Report the edits without applying them.
 
@@ -75,8 +77,9 @@ from .markers import HOLD_KEY
 
 # A line in a ledger file: ``(filename, lineno)``.
 Location = tuple[str, int]
-# Planned line edits: ``("comment" | "delete" | "amount", new amount or None)``.
-Edits = dict[Location, tuple[str, Decimal | None]]
+# Planned line edits: ``("comment" | "delete", None)``, ``("amount", new amount)``
+# or ``("redate", new date)``.
+Edits = dict[Location, tuple[str, Decimal | datetime.date | None]]
 # Planned balance directive amounts.
 Balances = dict[Location, Decimal]
 
@@ -321,6 +324,72 @@ def place_balance(
     return None, path, min(later, default=None)
 
 
+def repeated_balance(
+    entries: data.Directives,
+    account: str,
+    day: datetime.date,
+    number: Decimal,
+    adjusted: Balances,
+) -> data.Balance | None:
+    """The account's last balance directive, if one dated ``day`` would repeat it.
+
+    A fresh directive for ``number`` says nothing new when the last thing the
+    ledger records for the account is already a balance directive for that
+    amount: nothing has happened since. That directive is returned, to be
+    redated to ``day`` instead of a second one being written under it.
+
+    ``adjusted`` holds the amounts this run is about to give balance
+    directives, so one being corrected is compared by its corrected amount.
+
+    None, and a new directive is written as usual, when:
+
+    * the newest balance directive is not dated before ``day``, is one of
+      several on its date, or came from a plugin rather than a file;
+    * its amount is not ``number``; or
+    * a transaction posts to the account on or after its date. That includes a
+      transfer recorded in another account's file, and transactions that
+      cancel out: the directive then marks a real checkpoint, and stays.
+    """
+    balances = [
+        e for e in entries if isinstance(e, data.Balance) and e.account == account
+    ]
+    if not balances:
+        return None
+    newest = max(e.date for e in balances)
+    on_newest = [e for e in balances if e.date == newest]
+    last = on_newest[0]
+    where = _where(last)
+    if len(on_newest) > 1 or newest >= day or where is None:
+        return None
+    if (
+        last.amount.currency != CURRENCY
+        or adjusted.get(where, number_of(last.amount)) != number
+    ):
+        return None
+    for entry in entries:
+        if entry.date < newest:
+            continue
+        if isinstance(entry, data.Transaction) and any(
+            posting.account == account for posting in entry.postings
+        ):
+            return None
+        if isinstance(entry, data.Pad) and entry.account == account:
+            return None
+    return last
+
+
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def redated(line: str, day: datetime.date) -> str | None:
+    """The directive ``line`` with its date changed to ``day``, all else kept.
+
+    None if the line does not open with a date, so it is not rewritten blind.
+    """
+    match = _DATE.match(line)
+    return None if match is None else f"{day}{line[match.end() :]}"
+
+
 def format_balance(day: datetime.date, account: str, number: Decimal) -> str:
     """A ``balance`` directive line, amounts aligned for a short account name."""
     return f"{f'{day} balance {account}':<37} {number:>10} {CURRENCY}"
@@ -524,6 +593,9 @@ def apply_edits(
     ``new`` is ``(path, line, before)``: a directive to add to that file, in
     front of line ``before`` (and any comment lines directly above it), or at
     the end when ``before`` is None.
+
+    A ``"redate"`` edit gives a balance directive a new date. The same line may
+    also be in ``balances``: the date and the amount are written independently.
     """
     # A deleted line becomes "", which writes nothing but keeps every later
     # line number valid until the write.
@@ -542,8 +614,17 @@ def apply_edits(
         elif op == "delete":
             text[i] = ""
         elif op == "amount":
-            assert value is not None
+            assert isinstance(value, Decimal)
             text[i] = _rewrite_number(text[i], account, value)
+        elif op == "redate":
+            assert isinstance(value, datetime.date)
+            moved = redated(text[i], value)
+            if moved is None:
+                raise ReconcileError(
+                    f"Cannot rewrite the date on this line; fix it by hand and "
+                    f"run again:\n  {text[i].rstrip()}"
+                )
+            text[i] = moved
     for (path, lineno), number in balances.items():
         text = lines(path)
         text[lineno - 1] = _rewrite_number(text[lineno - 1], account, number)
